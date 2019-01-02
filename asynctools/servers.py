@@ -70,6 +70,8 @@ class _AServer:
         self.tcp_handlers = {}
         self.udp_handlers = {}
         self.http_handlers = {}
+        self.finish_urls = {}
+        self.error_urls = {}
 
 
     async def _tcp(self, ip, port, timeout=7, **kwargs):
@@ -477,6 +479,10 @@ class ConnectinoWaiter(Thread):
         self.fun = fun
         self.loop = loop
         self.policy = policy
+        while 1:
+            if len(ConnectinoWaiter.running_tasks) > 128:
+                break
+            time.sleep(1)
         ConnectinoWaiter.running_tasks.append(self)
 
     def run(self):
@@ -595,6 +601,8 @@ class Connection:
             while 'wait' in D:
                 con = True
                 d = s.recv(32280)
+                if d.endswith(b"{__end__}"):
+                    d = d[:-len('{__end__}')]
                 D = pickle.loads(d)
                 Data += D['data']
             if not con:
@@ -788,8 +796,10 @@ def start_socket_service():
         d = DaemonSocket('/tmp/async_sockset.pid' + port, port=port)
         d.start()
     elif sys.argv[1] == 'stop':
-        d = DaemonSocket('/tmp/async_sockset.pid' + port, port=port)
-        d.stop()
+        print(" clear file")
+        os.popen("rm /tmp/async_sockset.pid* ").read()
+        print("kill process")
+        os.popen("ps aux | grep m-async | grep -v grep | awk '{ print $2 }' | xargs kill -9 ").read()
     elif sys.argv[1] == 'restart':
         d = DaemonSocket('/tmp/async_sockset.pid' + port, port=port)
         d.restart()
@@ -801,15 +811,18 @@ def run_local_async():
     parser.add_argument('command', help='start / stop / restart')
     args = parser.parse_args()
 
-    if args.command in ['start', 'stop', 'restart']:
-        
+    if args.command in ['start',  'restart']:
         start_num = 12888
         with open(os.path.expanduser("~/.config/m-asyncs.num"), 'w') as fp:
             fp.write(str(args.num))
         for i in range(args.num):
             cmd = f"m-async {args.command} {start_num + i}"
             os.popen(cmd)
-        
+    elif args.command == 'stop':
+        print(" clear file")
+        os.popen("rm /tmp/async_sockset.pid* ").read()
+        print("kill process")
+        os.popen("ps aux | grep m-async | grep -v grep | awk '{ print $2 }' | xargs kill -9 ").read()
 
     else:
         print('Must in start / stop / restart')
