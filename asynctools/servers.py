@@ -9,12 +9,8 @@ import re
 from multiprocessing import Process
 import multiprocessing
 from threading import Thread
-from asynctools.libs import loger
 from contextlib import contextmanager
-from asynctools.daemon import Daemon
-from asynctools.udp import open_remote_endpoint as open_udp_connection
 import urllib.parse as up
-
 import async_timeout
 import aiosocks
 import aiohttp
@@ -23,6 +19,11 @@ from termcolor import cprint
 from aiosocks.connector import ProxyConnector, ProxyClientRequest
 from collections import deque
 import argparse
+from asynctools.daemon import Daemon
+from asynctools.udp import open_remote_endpoint as open_udp_connection
+from asynctools.libs import loger
+from asynctools.file import aio_db_save, RedisListener
+from qlib.io.tracepoint import trace_cls
 
 
 log = loger()
@@ -109,6 +110,8 @@ class _AServer:
                 'close':None,
                 'if_close': print,
                 'kwargs':{'proxy':proxy},
+                'url': url,
+                'selector': '',
             }
             return id
         except asyncio.TimeoutError as e:
@@ -126,6 +129,7 @@ class _AServer:
     async def _http_read(self, session, url, **kwargs):
 
         m = kwargs.get('method', 'get')
+        #selector = kwargs.get("selector","").split("|")
 
         if 'method' in kwargs:
             kwargs.pop('method')
@@ -242,8 +246,13 @@ class _AServer:
         elif c == b'op':
             id, data = msg.split(b',', 1)
             options = pickle.loads(data)
+            if 'selector' in options:
+                selector = options.pop('selector').split("|")
+            else:
+                selector = []
             h,tp = self.get_handler(id)
             log.info("options: {}".format(options))
+            h['selector'] = selector
             if h:
                 if options:
                     if not 'kwargs' in h:
@@ -264,20 +273,20 @@ class _AServer:
             h,tp = self.get_handler(id)
             if h:
                 if 'data' in h and h['data']:
-                    if len(h['data']) < 20480:
+                    if len(h['data']) < 32271 :
                         self.check_write(writer, pickle.dumps({'id': id, 'data': h['data'], 'msg':'ok'}))
                         await writer.drain()
                     else:
                         L = len(h['data'])
-                        C = L // 20480
+                        C = L // 32271
 
                         for i in range(C):
-                            sm = h['data'][i * 20480: (i+1) * 20480]
+                            sm = h['data'][i * 32271: (i+1) * 32271]
                             self.check_write(writer, pickle.dumps({'id': id, 'data': sm, 'msg':'ok' , 'wait':i}))
                             log.info(i)
                             await writer.drain()
-                        if C * 20480 < L:
-                            sm = h['data'][C*20480:]
+                        if C * 32271 < L:
+                            sm = h['data'][C*32371:]
                             self.check_write(writer, pickle.dumps({'id': id, 'data': sm, 'msg':'ok'}))
                             log.info('last')
                             await writer.drain()
@@ -356,6 +365,9 @@ class _AServer:
                         h['data'] = data
                         if callback:
                             callback(data)
+                        else:
+                            if 'selector' in h:
+                                await self.save_local(h, data)
                         break
                     else:
                         raise socket.error("no session ")
@@ -376,6 +388,8 @@ class _AServer:
                     # del self.http_handlers[id]
                     # log.info("close http session")
 
+    async def save_local(self, hand,data):
+        await aio_db_save(hand, data, self.loop)
 
 
     async def write(self,id ,data):
@@ -595,14 +609,16 @@ class Connection:
                 log.error(f"pickle error !: {data}")
                 return None
             if 'wait' in D:
-
                 Data = D['data']
 
             while 'wait' in D:
                 con = True
-                d = s.recv(32280)
-                if d.endswith(b"{__end__}"):
-                    d = d[:-len('{__end__}')]
+                d = b''
+                while 1:
+                    d += s.recv(32280)
+                    if d.endswith(b"{__end__}"):
+                        d = d[:-len('{__end__}')]
+                        break
                 D = pickle.loads(d)
                 Data += D['data']
             if not con:
@@ -632,6 +648,9 @@ class Connection:
             return self.data(wait)
 
     def options(self, **kwargs):
+        """
+        @selector if setting will direct select 
+        """
         if self.id2:
             id = self.id
             id2 = self.id2
@@ -770,6 +789,35 @@ class Connection:
         for port in  self.ports:
             s.connect(("127.0.0.1", port))
             s.send(b'ki')
+
+
+class HttpXp:
+
+    def __init__(self, url, *selector, proxy=False,
+                 socks_proxy='socks5://127.0.0.1:1080', **kargs):
+        
+        self.options = kargs
+        self.options['selector'] = '|'.join(selector)
+        self.url = url
+        self.con = Connection(url)
+        if proxy:
+            self.options['proxy'] = socks_proxy
+        self.con.options(**self.options)
+
+    def post(self,data, callback=None, runtime=10):
+        self.con.post(data=data)
+        if callback:
+            register = RedisListener(db=6)
+            register.regist(self.url, callback )
+            register.run_loop(runtime)
+
+    def get(self, callback=None, runtime=10):
+        self.con.get()
+        if callback:
+            register = RedisListener(db=6)
+            register.regist(self.url, callback )
+            register.run_loop(runtime)
+
 
 
 
