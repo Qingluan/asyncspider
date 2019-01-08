@@ -15,7 +15,7 @@ import async_timeout
 import aiosocks
 import aiohttp
 import time
-from termcolor import cprint
+from termcolor import cprint, colored
 from aiosocks.connector import ProxyConnector, ProxyClientRequest
 from collections import deque
 import argparse
@@ -24,6 +24,7 @@ from asynctools.udp import open_remote_endpoint as open_udp_connection
 from asynctools.libs import loger
 from asynctools.file import aio_db_save, RedisListener
 from qlib.io.tracepoint import trace_cls
+from asynctools.res import USER_AGENTS
 
 
 log = loger()
@@ -104,7 +105,7 @@ class _AServer:
 
 
             id = self._create_id()
-            log.info('ready session : {}'.format(url))
+            # log.info('ready session : {}'.format(url))
             self.http_handlers[id] = {
                 'read': functools.partial(self._http_read, session, url),
                 'close':None,
@@ -115,9 +116,7 @@ class _AServer:
             }
             return id
         except asyncio.TimeoutError as e:
-            await self.queue.put("timeout :tcp: " + ip)
             await self.close(id)
-            return
         except Exception as e:
             await self.queue.put(str(e))
             await self.close(id)
@@ -135,20 +134,22 @@ class _AServer:
             kwargs.pop('method')
         if m == 'get':
             async with  session.get(url, **kwargs) as response:
-                log.info('connect : {}'.format(url))
+                # log.info('connect : {}'.format(url))
                 if not response.status == 200:
                     log.error("[%d] : url : %s" % (response.status, url))
                     await response.release()
                 else:
                     try:
-                        return await response.text()
+                        text= await response.text()
+                        await response.release()
+                        return text
                     except Exception:
                         return await response.release()
         elif m =='post':
             async with session.post(url, **kwargs) as response:
                 log.info('post : {}'.format(url))
                 if not response.status == 200:
-                    log.error("Error: %d" % response.status)
+                    log.error("Error: %s" % colored(str(response.status), 'red'))
                     await response.release()
                 else:
                     try:
@@ -182,7 +183,6 @@ class _AServer:
             return
         except socket.error as e:
             log.error(e)
-            log.info("error")
             await self.queue.put(e)
             return
 
@@ -198,7 +198,7 @@ class _AServer:
         log.info(f"create tcp : {len(self.tcp_handlers)} http: {len(self.http_handlers)} ")
 
         data = await reader.read(65534)
-        log.info("recv from " + str(writer.get_extra_info('peername')))
+        # log.info("recv from " + str(writer.get_extra_info('peername')))
         c = data[:2]
         msg = data[2:]
         if c == b'in':
@@ -248,6 +248,7 @@ class _AServer:
             options = pickle.loads(data)
             if 'selector' in options:
                 selector = options.pop('selector').split("|")
+                log.info("selector load :" + " ".join(selector))
             else:
                 selector = []
             h,tp = self.get_handler(id)
@@ -319,12 +320,14 @@ class _AServer:
             raise KeyboardInterrupt("Exit --")
 
     async def read(self, id, callback=None, proxy=None):
+        hand_bak = None
         with self.deal(id) as hand:
             read = hand['read']
+            hand_bak = hand
             kwargs = {}
             if 'kwargs' in hand:
                 kwargs = hand['kwargs']
-            log.info("wait read")
+            #log.info("wait read")
             try:
                 st = 0
                 while 1:
@@ -340,7 +343,7 @@ class _AServer:
                     # only for tcp and udp
                     if isinstance(data, bytes):
                         c = 0
-                        log.info("recv no.%d" % c)
+                        #log.info("recv no.%d" % c)
                         while data.endswith(b'[continu@]'):
                             waiter = read()
                             extand_data = await asyncio.wait_for(waiter, timeout=10)
@@ -350,17 +353,18 @@ class _AServer:
                             else:
                                 data += extand_data
 
-                            log.info("recv no.%d" % c)
+                            #log.info("recv no.%d" % c)
 
-                        log.info("all length : %d" % (len(data)))
+                        log.info("[%s] 200 [%d]" % (colored(hand['url'], 'green'),len(data)))
                     else:
                         log.info("recv a object from remote : {}".format(type(data)))
 
 
                     if not data:
                       st += 1
-                    log.info(id + " :got data ")
-                    h,t = self.get_handler(id)
+                    # log.info(id + " :got data ")
+                    h, t = self.get_handler(id)
+                    hand_bak = h
                     if h:
                         h['data'] = data
                         if callback:
@@ -373,20 +377,26 @@ class _AServer:
                         raise socket.error("no session ")
             except asyncio.TimeoutError as e:
                 await self.close(id)
-                log.info("close id: " + id)
-                await self.queue.put('Timeout and kill this session.')
-                log.info("collect msg in queue")
+                #log.info("close id: " + id)
+                log.error(e)
             except socket.error as e:
-                await self.close(id)
-                log.info("close id: " + id)
-                await self.queue.put(e)
-                log.info("collect msg in queue")
+                if 'Cannot connect to host' in str(e) and 'ssl' in str(e):
+                    log.warn("ssl error , try again")
+                    await self.retry_http(hand_bak, callback, proxy)
+                else:
+                    await self.close(id)
+                    #log.info("close id: " + id)
+                    if 'no session' in str(e):
+                        pass
+                    else:
+                        log.error(e)
 
-            # finally:
-                # _, t = self.get_handler(id)
-                # if t == 'http':
-                    # del self.http_handlers[id]
-                    # log.info("close http session")
+    
+    async def retry_http(self, hand, callback, proxy):
+        id = self._create_id()
+        self.http_handlers[id] = hand
+        log.info(hand['url'])
+        await self.read(id, callback=callback, proxy=proxy)
 
     async def save_local(self, hand,data):
         await aio_db_save(hand, data, self.loop)
@@ -549,9 +559,11 @@ def load_m_async_num():
 ASYNC_PORTS = load_m_async_num()
 
 class Connection:
+    ports = None
     def __init__(self, ip='127.0.0.1', port=80, tp='http', double_route=False, id=None, loop=None, policy=None, ports=ASYNC_PORTS):
         self.loop = loop
         self.ports = ports
+        self.__class__.ports = ports
         self.policy = policy
         self.Lport = 12888
         self.id2 = None
@@ -575,7 +587,7 @@ class Connection:
                 raise ConnectionCreateError(tmp['msg'])
 
             if 'id2' in tmp and tmp['id2']:
-                self.id2 = ftmp['id2']
+                self.id2 = tmp['id2']
 
 
     def _write(self,data, read=True):
@@ -588,8 +600,6 @@ class Connection:
             log.error(str(e) + " You should check m-async if start ")
             os.popen('m-asyncs start')
             return None
-
-            
         s.send(data)
         if read:
             D = None
@@ -634,8 +644,7 @@ class Connection:
         if callback:
             return self.read(callback=callback)
         else:
-            self.read()
-            return self.data(wait)
+            return self.read()
 
     def post(self, data, wait=False,callback=None, loop=None, **kwargs):
         if loop:
@@ -677,6 +686,8 @@ class Connection:
         if self.id2:
             m2 = 'rd' + self.id2
             msg2 = self._write(m.encode())
+            if msg2:
+                return msg2
         if callback:
             c = ConnectinoWaiter(self.data, callback=callback, loop=self.loop, policy=self.policy)
             c.start()
@@ -786,20 +797,22 @@ class Connection:
     @staticmethod
     def stop():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        for port in  self.ports:
+        for port in  Connection.ports:
             s.connect(("127.0.0.1", port))
             s.send(b'ki')
 
 
 class HttpXp:
 
-    def __init__(self, url, *selector, proxy=False,
+    def __init__(self, url, *selector, agent=False, proxy=False,
                  socks_proxy='socks5://127.0.0.1:1080', **kargs):
         
         self.options = kargs
         self.options['selector'] = '|'.join(selector)
         self.url = url
         self.con = Connection(url)
+        if agent:
+            self.options['headers'] = {"user-agent": USER_AGENTS[0]}
         if proxy:
             self.options['proxy'] = socks_proxy
         self.con.options(**self.options)

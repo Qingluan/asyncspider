@@ -27,14 +27,16 @@ decoder = lambda x: pickle.loads(b64decode(x))
 #            await f.write(data)
 #        mock_file.write.assert_called_once_with(data)
 
-async def aio_db_save(hand, data,loop, *selector):
+async def aio_db_save(hand, data,loop ):
     soup = Bs(data, 'lxml')
     redis = await aioredis.create_redis(
      'redis://localhost', db=6, loop=loop)
     m = {}
+    selector = hand['selector']
     if selector:
         m['tag'] = []
         for select_id in selector:
+            if not select_id.strip():continue
             for s in soup.select(select_id):
                 w = s.attrs
                 w['xml'] = s.decode()
@@ -52,8 +54,8 @@ class RedisListener:
     exe = ThreadPoolExecutor(64)
     
     def __init__(self,db=0, host='localhost', loop=None):
-        if not loop:
-            loop = asyncio.get_event_loop()
+        #if not loop:
+        #    loop = asyncio.get_event_loop()
         self.loop = loop    
         self.host = host
         self.redis_db = db
@@ -63,7 +65,7 @@ class RedisListener:
     def regist(self,key,func, **kargs):
         f = partial(func, **kargs)
         self.handler[key.encode()] = f
-        logging.info(key + " : "+ str(f))
+        #logging.info(key + " : "+ str(f))
 
     def clear_db(self):
         r = Redis(host=self.host, db=self.redis_db)
@@ -81,7 +83,11 @@ class RedisListener:
             for kk in got_key:        
                 fun = self.handler.pop(kk)
                 arg = decoder(r.get(kk))
-                self.__class__.exe.submit(fun, arg)
+                # logging.info("handle -> " + kk.decode())
+                #import pdb; pdb.set_trace()
+                fun(arg)
+                #self.__class__.exe.submit(fun, arg)
+                r.delete(kk)
             yield
     
     def _run_loop(self, sec):
@@ -97,7 +103,7 @@ class RedisListener:
             for kk in got_key:        
                 fun = self.handler.pop(kk)
                 arg = decoder(r.get(kk))
-                logging.info("handle ->" + kk.decode())
+                #logging.info("handle ->" + kk.decode())
                 self.__class__.exe.submit(fun, arg)
             if got_key:
                 break
