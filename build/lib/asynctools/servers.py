@@ -25,7 +25,6 @@ from asynctools.libs import loger
 from asynctools.file import aio_db_save, RedisListener
 from qlib.io.tracepoint import trace_cls
 from asynctools.res import USER_AGENTS
-import traceback
 
 
 log = loger()
@@ -64,7 +63,7 @@ class ConnectionCache(dict):
 
 class _AServer:
 
-    def __init__(self, port=12888, error_times=5):
+    def __init__(self, port=12888):
         self.port = port
         self.loop = asyncio.get_event_loop()
         if self.loop.is_closed():
@@ -75,8 +74,6 @@ class _AServer:
         self.http_handlers = {}
         self.finish_urls = {}
         self.error_urls = {}
-
-        self.try_error_times = error_times
 
 
     async def _tcp(self, ip, port, timeout=7, **kwargs):
@@ -121,8 +118,7 @@ class _AServer:
         except asyncio.TimeoutError as e:
             await self.close(id)
         except Exception as e:
-            traceback.print_stack()
-            log.error(e)
+            await self.queue.put(str(e))
             await self.close(id)
             return
 
@@ -375,48 +371,31 @@ class _AServer:
                             callback(data)
                         else:
                             if 'selector' in h:
-                                log.info(colored(h['url'], 'blue') + " -> redis")
                                 await self.save_local(h, data)
                         break
                     else:
-
-                        raise Exception("session is loss : "+ hand['url'])
-                        log.error("no session :" + colored(hand['url'], 'red'))
+                        raise socket.error("no session ")
             except asyncio.TimeoutError as e:
                 await self.close(id)
-                log.error("timeout : %s" % colored(hand['url'],'red') )
                 #log.info("close id: " + id)
+                log.error(e)
             except socket.error as e:
                 if 'Cannot connect to host' in str(e) and 'ssl' in str(e):
                     log.warn("ssl error , try again")
-                    await self.retry_http(hand_bak, callback ,proxy)
+                    await self.retry_http(hand_bak, callback, proxy)
                 else:
-                    print(colored(e, 'red'))
-                    raise e
                     await self.close(id)
                     #log.info("close id: " + id)
                     if 'no session' in str(e):
                         pass
                     else:
-                        traceback.print_stack()
-                        #log.error(e)
-            except Exception as e:
-                log.error(e)
-                await self.retry_http(hand, callback, proxy)
+                        log.error(e)
 
     
     async def retry_http(self, hand, callback, proxy):
-        url = hand['url']
-        if url not in self.error_urls:
-            self.error_urls[url] = 1
-        else:
-            if self.error_urls[url] > self.try_error_times:
-                await asyncio.sleep(0.1)
-                return
-            self.error_urls[url] += 1
         id = self._create_id()
         self.http_handlers[id] = hand
-        log.info('wider try: ' + colored(hand['url'], 'yellow'))
+        log.info(hand['url'])
         await self.read(id, callback=callback, proxy=proxy)
 
     async def save_local(self, hand,data):
@@ -426,7 +405,7 @@ class _AServer:
     async def write(self,id ,data):
         with self.deal(id) as hand:
             write = hand['write']
-            write(data)
+            waiter = write(data)
 
     def run(self):
         coro = asyncio.start_server(self.commander, '127.0.0.1', self.port, loop=self.loop)
@@ -443,7 +422,7 @@ class _AServer:
         self.loop.close()
 
     async def close(self, id):
-        log.info('close id: {id}'.format(id=id))
+        log.info(f'close id: {id}')
         h,t = self.get_handler(id)
         if t == 'tcp':
             h['close']()
@@ -628,6 +607,7 @@ class Connection:
             d = b''
             while 1:
                 d += s.recv(32280)
+                # log.error(d)
                 if d.endswith(b"{__end__}"):
                     d = d[:-len('{__end__}')]
                     break
@@ -683,25 +663,25 @@ class Connection:
         if self.id2:
             id = self.id
             id2 = self.id2
-            m = 'op' + id + ","
-            m2 = 'op' + id2 + ","
+            m = 'op' + self.id + ","
+            m2 = 'op' + self.id2 + ","
             msg = self._write(m.encode() + pickle.dumps(kwargs))
             msg2 = self._write(m2.encode() + pickle.dumps(kwargs))
             return msg
         else:
             id = self.id
-            m = 'op' + id + ","
+            m = 'op' + self.id + ","
             msg = self._write(m.encode() + pickle.dumps(kwargs))
             return msg
 
     def info(self):
         id = self.id
-        m = 'rq' + id
+        m = 'rq' + self.id
         msg = self._write(m.encode())
 
     def read(self, wait=False, callback=None):
         id = self.id
-        m = 'rd' + id
+        m = 'rd' + self.id
         msg = self._write(m.encode())
         if self.id2:
             m2 = 'rd' + self.id2
@@ -824,7 +804,7 @@ class Connection:
 
 class HttpXp:
 
-    def __init__(self, url, *selector, agent=True, proxy=False,
+    def __init__(self, url, *selector, agent=False, proxy=False,
                  socks_proxy='socks5://127.0.0.1:1080', **kargs):
         
         self.options = kargs
@@ -844,11 +824,11 @@ class HttpXp:
             register.regist(self.url, callback )
             register.run_loop(runtime)
 
-    def get(self, callback=None, runtime=120):
+    def get(self, callback=None, runtime=10):
         self.con.get()
         if callback:
             register = RedisListener(db=6)
-            register.regist(self.url, callback)
+            register.regist(self.url, callback )
             register.run_loop(runtime)
 
 
@@ -856,30 +836,25 @@ class HttpXp:
 
 
 class DaemonSocket(Daemon):
-    def __init__(self, *args, port=12888,error_times=5, **kwargs):
+    def __init__(self, *args, port=12888, **kwargs):
         super().__init__(*args, **kwargs)
         self.port = int(port)
-        self.error_times = error_times
 
     def run(self):
-         serv = _AServer(self.port, error_times=self.error_times)
+         serv = _AServer(self.port)
          log.info("Start local socket server!")
          serv.run()
 
 def start_socket_service():
     port = ''
-    error_time = 5
     if len(sys.argv) > 2:
         port = sys.argv[2]
-    if len(sys.argv) > 3:
-        error_time  = int(sys.argv[3])
-    
 
     if sys.argv[1] == 'start':
         # start_local_socket_process(12889)
         # start_local_socket_process(12890)
         # start_local_socket_process(12891)
-        d = DaemonSocket('/tmp/async_sockset.pid' + port, port=port, error_times=error_time)
+        d = DaemonSocket('/tmp/async_sockset.pid' + port, port=port)
         d.start()
     elif sys.argv[1] == 'stop':
         print(" clear file")
@@ -898,9 +873,6 @@ def run_local_async():
     args = parser.parse_args()
 
     if args.command in ['start',  'restart']:
-        if not os.popen("ps aux | grep redis | grep -v 'grep' ").read().strip():
-            print(colored("first to install Redis !!\nthen start redis as daemon!!!","red"))
-            sys.exit(1)
         start_num = 12888
         with open(os.path.expanduser("~/.config/m-asyncs.num"), 'w') as fp:
             fp.write(str(args.num))

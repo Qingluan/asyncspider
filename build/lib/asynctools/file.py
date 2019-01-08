@@ -30,7 +30,7 @@ decoder = lambda x: pickle.loads(b64decode(x))
 async def aio_db_save(hand, data,loop ):
     soup = Bs(data, 'lxml')
     redis = await aioredis.create_redis(
-        'redis://localhost', db=6, loop=loop)
+     'redis://localhost', db=6, loop=loop)
     m = {}
     selector = hand['selector']
     if selector:
@@ -47,6 +47,7 @@ async def aio_db_save(hand, data,loop ):
     redis.close()
     await redis.wait_closed()
 
+from qlib.io.tracepoint import trace_cls
 
 class RedisListener:
 
@@ -104,10 +105,7 @@ class RedisListener:
                 arg = decoder(r.get(kk))
                 #logging.info("handle ->" + kk.decode())
                 self.__class__.exe.submit(fun, arg)
-                r.delete(kk)
-            
             if got_key:
-                # to stop this listener thread
                 break
             
             et = time.time()
