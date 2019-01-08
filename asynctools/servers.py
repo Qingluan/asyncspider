@@ -23,7 +23,7 @@ from asynctools.daemon import Daemon
 from asynctools.udp import open_remote_endpoint as open_udp_connection
 from asynctools.libs import loger
 from asynctools.file import aio_db_save, RedisListener
-from qlib.io.tracepoint import trace_cls
+# from qlib.io.tracepoint import trace_cls
 from asynctools.res import USER_AGENTS
 import traceback
 

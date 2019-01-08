@@ -1,6 +1,6 @@
 import asyncio
 import aioredis
-from mroylib.config import Config
+# from mroylib.config import Config
 import os
 import aiofiles
 from bs4 import BeautifulSoup as Bs
@@ -13,7 +13,7 @@ import logging
 from concurrent.futures.thread import ThreadPoolExecutor
 
 
-CONF = Config(file=os.path.expanduser("~/.config/aio.ini"))
+# CONF = Config(file=os.path.expanduser("~/.config/aio.ini"))
 encoder = lambda x: b64encode(pickle.dumps(x)).decode()
 decoder = lambda x: pickle.loads(b64decode(x))
 #aiofiles.threadpool.wrap.register(mock.MagicMock)(
