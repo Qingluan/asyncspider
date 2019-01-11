@@ -1,0 +1,4 @@
+[console_scripts]
+m-async = asynctools.servers:start_socket_service
+m-asyncs = asynctools.servers:run_local_async
+

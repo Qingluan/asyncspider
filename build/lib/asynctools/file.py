@@ -6,7 +6,6 @@ import aiofiles
 from bs4 import BeautifulSoup as Bs
 from base64 import b64decode, b64encode
 from functools import partial
-from termcolor import colored
 import pickle
 import time
 from redis import Redis
@@ -28,8 +27,8 @@ decoder = lambda x: pickle.loads(b64decode(x))
 #            await f.write(data)
 #        mock_file.write.assert_called_once_with(data)
 
-async def aio_db_save(id, hand, data,loop ):
-    soup = Bs(data, 'lxml')   
+async def aio_db_save(hand, data,loop ):
+    soup = Bs(data, 'lxml')
     redis = await aioredis.create_redis(
         'redis://localhost', db=6, loop=loop)
     m = {}
@@ -44,7 +43,7 @@ async def aio_db_save(id, hand, data,loop ):
                 m['tag'].append(w)
     else:
         m['html'] = data 
-    await redis.set(id, encoder(m))
+    await redis.set(hand['url'], encoder(m))
     redis.close()
     await redis.wait_closed()
 
@@ -52,19 +51,15 @@ async def aio_db_save(id, hand, data,loop ):
 class RedisListener:
 
     exe = ThreadPoolExecutor(64)
-    ok = set()    
-    handler = dict()
+    
     def __init__(self,db=0, host='localhost', loop=None):
         #if not loop:
         #    loop = asyncio.get_event_loop()
         self.loop = loop    
         self.host = host
         self.redis_db = db
-        self.handler = {}
+        self.handler = {} 
         self.runtime_gen = self.runtime()
-        self.id = None
-
-        # if this handle finish other's mession , will notify to Class
 
     def regist(self,key,func, **kargs):
         f = partial(func, **kargs)
@@ -80,13 +75,12 @@ class RedisListener:
         while 1:
             keys = r.keys()
             got_key = []
-            handler = self.handler
-            for k in handler:
+            for k in self.handler:
                 if k in keys:
                     got_key.append(k)
                     
             for kk in got_key:        
-                fun = handler.pop(kk)
+                fun = self.handler.pop(kk)
                 arg = decoder(r.get(kk))
                 # logging.info("handle -> " + kk.decode())
                 #import pdb; pdb.set_trace()
@@ -95,72 +89,31 @@ class RedisListener:
                 r.delete(kk)
             yield
     
-    def finish(self,fun, arg, key):
-        def _finish(res):
-            # print("real finish")
-            self.__class__.ok.add(key)
-        fut = self.__class__.exe.submit(fun, arg)
-        fut.add_done_callback(_finish)
-    
     def _run_loop(self, sec):
         r = Redis(host=self.host, db=self.redis_db)
-        #r.flushdb()
         st = time.time()
-        turn = 0
-        try:
-            while 1:
-                oks = self.__class__.ok
-                handler = self.handler
-                got_key = []
-                #if not handler.keys():break
-                for k in handler:
-                    if isinstance(k, str):
-                        key = k.encode()
-                    else:
-                        key = k
-
-                    #if key in oks:
-                        # print("mission finish %s?" % key)
-                    #    got_key.append(key)
-                    #    continue
-
-                    if key in r.keys():
-                        # print("load key", key)
-                        got_key.append(key)
+        while 1:
+            keys = r.keys()
+            got_key = []
+            for k in self.handler:
+                if k in keys:
+                    got_key.append(k)
                     
-                        
-                for i,kk in enumerate(got_key):        
-                    if kk in handler:
-                        fun = handler.get(kk)
-                    else:
-                        fun = None
-                        continue
-
-                    arg_tmp = r.get(kk)
-                    if not arg_tmp:continue
-                    arg = decoder(arg_tmp)
-                    # print(i,"handle ->" + kk.decode())
-                    # self.__class__.exe.submit(fun, arg)
-                    self.finish(fun, arg, kk)
-                    r.delete(kk)
-                
-                # print(handler.keys(), r.keys())
-                if got_key:
-                    # print("got_key")
-                    # to stop this listener thread
-                    break
-                
-                et = time.time()
-                if et - st > sec:
-                    # print(et - st)
-                    # print("what?")
-                    break
-                time.sleep(0.4)
-                turn += 1
-                # print("wait :%d" % turn )
-        except Exception as e:
-            logging.exception(e)
-
+            for kk in got_key:        
+                fun = self.handler.pop(kk)
+                arg = decoder(r.get(kk))
+                #logging.info("handle ->" + kk.decode())
+                self.__class__.exe.submit(fun, arg)
+                r.delete(kk)
+            
+            if got_key:
+                # to stop this listener thread
+                break
+            
+            et = time.time()
+            if et - st > sec:
+                break
+     
     def run_loop(self, sec):
         self.__class__.exe.submit(self._run_loop, sec)
 
