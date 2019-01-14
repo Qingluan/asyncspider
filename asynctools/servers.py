@@ -15,6 +15,7 @@ import async_timeout
 import aiosocks
 import aiohttp
 import time
+import random
 from termcolor import cprint, colored
 from aiosocks.connector import ProxyConnector, ProxyClientRequest
 from collections import deque
@@ -337,10 +338,11 @@ class _AServer:
                 st = 0
                 while 1:
                     if st > 10:
+                        log.error("[%s] [%s]" % (colored(hand['url'], 'red'), "try over"))
                         raise asyncio.TimeoutError("socket seemd closed")
 
                     waiter = read(**kwargs)
-                    data = await asyncio.wait_for(waiter, timeout=40)
+                    data = await asyncio.wait_for(waiter, timeout=12)
 
                     if isinstance(data, str):
                         data = data.encode("utf8")
@@ -394,13 +396,14 @@ class _AServer:
                 await self.retry_http(str(id), hand, callback, proxy)
                 #log.info("close id: " + id)
             except socket.error as e:
-                if 'Cannot connect to host' in str(e) and 'ssl' in str(e):
+                if 'Cannot connect to host' in str(e) and 'ssl' in str(e).lower():
                     log.warn("ssl error , try again")
                     await self.retry_http(str(id), hand_bak, callback ,proxy)
                 else:
                     await self.retry_http(str(id), hand, callback, proxy)
             except Exception as e:
                 log.error("404: %s" % str(e))
+                log.exception(e)
                 # traceback.print_stack()
                 await self.retry_http(str(id), hand, callback, proxy)
 
@@ -411,6 +414,8 @@ class _AServer:
             self.error_urls[url] = 1
         else:
             if self.error_urls[url] > self.try_error_times:
+                log.error("Over times: %s" % colored(self.error_urls[url], 'red'))
+                await self.save_local(id, hand, {"error": "overtime"})
                 return
             self.error_urls[url] += 1
         self.http_handlers[id] = hand
@@ -765,7 +770,7 @@ class Connection:
 
 class HttpXp:
 
-    def __init__(self, url, *selector, agent=True, proxy=False,
+    def __init__(self, url, *selector, agent=True, random_agent=True, proxy=False,
                  socks_proxy='socks5://127.0.0.1:1080', **kargs):
         
         self.options = kargs
@@ -773,7 +778,11 @@ class HttpXp:
         self.url = url
         self.con = Connection(url)
         if agent:
-            self.options['headers'] = {"user-agent": USER_AGENTS[0]}
+            if random_agent:
+                ag = random.choice(USER_AGENTS)
+            else:
+                ag = USER_AGENTS[0]
+            self.options['headers'] = {"user-agent": ag}
         if proxy:
             self.options['proxy'] = socks_proxy
         self.con.options(**self.options)

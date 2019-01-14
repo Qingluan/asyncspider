@@ -12,6 +12,7 @@ import time
 from redis import Redis
 import logging
 from concurrent.futures.thread import ThreadPoolExecutor
+from concurrent.futures import TimeoutError
 
 
 # CONF = Config(file=os.path.expanduser("~/.config/aio.ini"))
@@ -29,12 +30,17 @@ decoder = lambda x: pickle.loads(b64decode(x))
 #        mock_file.write.assert_called_once_with(data)
 
 async def aio_db_save(id, hand, data,loop ):
-    soup = Bs(data, 'lxml')   
+    m = {}
     redis = await aioredis.create_redis(
         'redis://localhost', db=6, loop=loop)
-    m = {}
+    if isinstance(data, dict) and 'error' in data:
+        m = data
+        soup = None
+    else:
+        soup = Bs(data, 'lxml')   
+    
     selector = hand['selector']
-    if selector:
+    if selector and soup:
         m['tag'] = []
         for select_id in selector:
             if not select_id.strip():continue
@@ -51,10 +57,10 @@ async def aio_db_save(id, hand, data,loop ):
 
 class RedisListener:
 
-    exe = ThreadPoolExecutor(64)
+    exe = ThreadPoolExecutor(256)
     ok = set()    
     handler = dict()
-    def __init__(self,db=0, host='localhost', loop=None):
+    def __init__(self,db=0, host='localhost', loop=None, timeout=10):
         #if not loop:
         #    loop = asyncio.get_event_loop()
         self.loop = loop    
@@ -63,6 +69,8 @@ class RedisListener:
         self.handler = {}
         self.runtime_gen = self.runtime()
         self.id = None
+        self.timeout = timeout
+        self.running_handle = []
 
         # if this handle finish other's mession , will notify to Class
 
@@ -99,8 +107,14 @@ class RedisListener:
         def _finish(res):
             # print("real finish")
             self.__class__.ok.add(key)
+        
+            
         fut = self.__class__.exe.submit(fun, arg)
         fut.add_done_callback(_finish)
+        self.running_handle.append(fut)
+        #fut.result(timeout=self.timeout)
+        # except TimeoutError as te:
+            # logging.error(colored("[!] : %s Timeout" % key))
     
     def _run_loop(self, sec):
         r = Redis(host=self.host, db=self.redis_db)
@@ -139,6 +153,16 @@ class RedisListener:
                     arg_tmp = r.get(kk)
                     if not arg_tmp:continue
                     arg = decoder(arg_tmp)
+
+                    # this is for schedule thread handler , to avoid thread blocked forever!!
+                    if len(self.running_handle) > 230:
+                        for f in self.running_handle:
+                            try:
+                                [f.result(timeout=self.timeout) ]
+                            except TimeoutError:
+                                pass
+                        self.running_handle = []
+                    
                     # print(i,"handle ->" + kk.decode())
                     # self.__class__.exe.submit(fun, arg)
                     self.finish(fun, arg, kk)
@@ -160,6 +184,17 @@ class RedisListener:
                 # print("wait :%d" % turn )
         except Exception as e:
             logging.exception(e)
+        
+        finally:
+           if len(self.running_handle) > 0:
+                for f in self.running_handle:
+                    try:
+                        [f.result(timeout=self.timeout) ]
+                    except TimeoutError:
+                        pass
+                self.running_handle = [] 
+
+        
 
     def run_loop(self, sec):
         self.__class__.exe.submit(self._run_loop, sec)
