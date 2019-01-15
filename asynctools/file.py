@@ -15,19 +15,9 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from concurrent.futures import TimeoutError
 
 
-# CONF = Config(file=os.path.expanduser("~/.config/aio.ini"))
 encoder = lambda x: b64encode(pickle.dumps(x)).decode()
 decoder = lambda x: pickle.loads(b64decode(x))
-#aiofiles.threadpool.wrap.register(mock.MagicMock)(
-#    lambda *args, **kwargs: threadpool.AsyncBufferedIOBase(*args, **kwargs))
 
-#async def aio_save(filename, data, t='wb'):
-#    mock_file = mock.MagicMock()
-
-#    with mock.patch('aiofiles.threadpool.sync_open', return_value=mock_file) as mock_open:
-#        async with aiofiles.open(filename, t) as f:
-#            await f.write(data)
-#        mock_file.write.assert_called_once_with(data)
 
 async def aio_db_save(id, hand, data,loop ):
     m = {}
@@ -60,6 +50,7 @@ class RedisListener:
     exe = ThreadPoolExecutor(256)
     ok = set()    
     handler = dict()
+    running_handle = []
     def __init__(self,db=0, host='localhost', loop=None, timeout=10):
         #if not loop:
         #    loop = asyncio.get_event_loop()
@@ -70,14 +61,10 @@ class RedisListener:
         self.runtime_gen = self.runtime()
         self.id = None
         self.timeout = timeout
-        self.running_handle = []
-
-        # if this handle finish other's mession , will notify to Class
 
     def regist(self,key,func, **kargs):
         f = partial(func, **kargs)
         self.handler[key.encode()] = f
-        #logging.info(key + " : "+ str(f))
 
     def clear_db(self):
         r = Redis(host=self.host, db=self.redis_db)
@@ -111,7 +98,7 @@ class RedisListener:
             
         fut = self.__class__.exe.submit(fun, arg)
         fut.add_done_callback(_finish)
-        self.running_handle.append(fut)
+        self.__class__.running_handle.append(fut)
         #fut.result(timeout=self.timeout)
         # except TimeoutError as te:
             # logging.error(colored("[!] : %s Timeout" % key))
@@ -126,23 +113,19 @@ class RedisListener:
                 oks = self.__class__.ok
                 handler = self.handler
                 got_key = []
-                #if not handler.keys():break
+
+                et = time.time()
+                if et - st > sec:
+                    break
                 for k in handler:
                     if isinstance(k, str):
                         key = k.encode()
                     else:
                         key = k
 
-                    #if key in oks:
-                        # print("mission finish %s?" % key)
-                    #    got_key.append(key)
-                    #    continue
-
                     if key in r.keys():
-                        # print("load key", key)
                         got_key.append(key)
-                    
-                        
+
                 for i,kk in enumerate(got_key):        
                     if kk in handler:
                         fun = handler.get(kk)
@@ -154,30 +137,13 @@ class RedisListener:
                     if not arg_tmp:continue
                     arg = decoder(arg_tmp)
 
-                    # this is for schedule thread handler , to avoid thread blocked forever!!
-                    if len(self.running_handle) > 230:
-                        for f in self.running_handle:
-                            try:
-                                [f.result(timeout=self.timeout) ]
-                            except TimeoutError:
-                                pass
-                        self.running_handle = []
-                    
-                    # print(i,"handle ->" + kk.decode())
-                    # self.__class__.exe.submit(fun, arg)
+                    # finish will load function to deal data from redis.
                     self.finish(fun, arg, kk)
                     r.delete(kk)
                 
-                # print(handler.keys(), r.keys())
                 if got_key:
                     # print("got_key")
                     # to stop this listener thread
-                    break
-                
-                et = time.time()
-                if et - st > sec:
-                    # print(et - st)
-                    # print("what?")
                     break
                 time.sleep(0.4)
                 turn += 1
@@ -185,15 +151,17 @@ class RedisListener:
         except Exception as e:
             logging.exception(e)
         
-        finally:
-           if len(self.running_handle) > 0:
-                for f in self.running_handle:
-                    try:
-                        [f.result(timeout=self.timeout) ]
-                    except TimeoutError:
-                        pass
-                self.running_handle = [] 
-
+        # finally:
+        #    if len(self.__class__.running_handle) > 40:
+        #         r_hs =[]
+        #         for f in self.__class__.running_handle:
+        #             r_hs.append(f)
+        #             try:
+        #                 [f.result(timeout=self.timeout) ]
+        #             except TimeoutError:
+        #                 pass
+        #         [self.__class__.running_handle.remove(i) for i in r_hs if i in self.__class__.running_handle]
+        #         logging.info(colored("(x): %d " % len(self.__class__.running_handle),'green', attrs=['bold']))
         
 
     def run_loop(self, sec):
