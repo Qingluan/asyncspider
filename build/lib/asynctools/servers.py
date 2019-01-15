@@ -15,6 +15,7 @@ import async_timeout
 import aiosocks
 import aiohttp
 import time
+import random
 from termcolor import cprint, colored
 from aiosocks.connector import ProxyConnector, ProxyClientRequest
 from collections import deque
@@ -123,7 +124,8 @@ class _AServer:
         except Exception as e:
             traceback.print_stack()
             log.error(e)
-            await self.close(id)
+            if id in self.http_handlers:
+                await self.close(id)
             return
 
     async def _http_release(self, response):
@@ -336,10 +338,11 @@ class _AServer:
                 st = 0
                 while 1:
                     if st > 10:
+                        log.error("[%s] [%s]" % (colored(hand['url'], 'red'), "try over"))
                         raise asyncio.TimeoutError("socket seemd closed")
 
                     waiter = read(**kwargs)
-                    data = await asyncio.wait_for(waiter, timeout=40)
+                    data = await asyncio.wait_for(waiter, timeout=12)
 
                     if isinstance(data, str):
                         data = data.encode("utf8")
@@ -376,51 +379,51 @@ class _AServer:
                         else:
                             if 'selector' in h:
                                 log.info(colored(h['url'], 'blue') + " -> redis")
-                                await self.save_local(h, data)
+                                await self.save_local(str(id), h, data)
                         break
                     else:
-
-                        raise Exception("session is loss : "+ hand['url'])
-                        log.error("no session :" + colored(hand['url'], 'red'))
+                        if data:
+                            hand['data'] = data
+                            if 'selector' in hand:
+                                log.info(colored(hand['url'], 'blue', attrs=['bold']) + " -> redis %d" % (len(data))) 
+                                await self.save_local(str(id), hand, data)
+                            break
+                        else:
+                            raise Exception("session is loss : "+ hand['url'])
             except asyncio.TimeoutError as e:
                 await self.close(id)
                 log.error("timeout : %s" % colored(hand['url'],'red') )
+                await self.retry_http(str(id), hand, callback, proxy)
                 #log.info("close id: " + id)
             except socket.error as e:
-                if 'Cannot connect to host' in str(e) and 'ssl' in str(e):
+                if 'Cannot connect to host' in str(e) and 'ssl' in str(e).lower():
                     log.warn("ssl error , try again")
-                    await self.retry_http(hand_bak, callback ,proxy)
+                    await self.retry_http(str(id), hand_bak, callback ,proxy)
                 else:
-                    print(colored(e, 'red'))
-                    raise e
-                    await self.close(id)
-                    #log.info("close id: " + id)
-                    if 'no session' in str(e):
-                        pass
-                    else:
-                        traceback.print_stack()
-                        #log.error(e)
+                    await self.retry_http(str(id), hand, callback, proxy)
             except Exception as e:
-                log.error(e)
-                await self.retry_http(hand, callback, proxy)
+                log.error("404: %s" % str(e))
+                log.exception(e)
+                # traceback.print_stack()
+                await self.retry_http(str(id), hand, callback, proxy)
 
     
-    async def retry_http(self, hand, callback, proxy):
+    async def retry_http(self,id, hand, callback, proxy):
         url = hand['url']
         if url not in self.error_urls:
             self.error_urls[url] = 1
         else:
             if self.error_urls[url] > self.try_error_times:
-                await asyncio.sleep(0.1)
+                log.error("Over times: %s" % colored(self.error_urls[url], 'red'))
+                await self.save_local(id, hand, {"error": "overtime"})
                 return
             self.error_urls[url] += 1
-        id = self._create_id()
         self.http_handlers[id] = hand
         log.info('wider try: ' + colored(hand['url'], 'yellow'))
         await self.read(id, callback=callback, proxy=proxy)
 
-    async def save_local(self, hand,data):
-        await aio_db_save(hand, data, self.loop)
+    async def save_local(self,id, hand,data):
+        await aio_db_save(id, hand, data, self.loop)
 
 
     async def write(self,id ,data):
@@ -587,7 +590,6 @@ class Connection:
         self.__class__.ports = ports
         self.policy = policy
         self.Lport = 12888
-        self.id2 = None
         if self.ports:
             self.Lport = random.choice(self.ports)
             # log.info("connect to %d" % self.Lport)
@@ -607,8 +609,6 @@ class Connection:
                 log.error(tmp)
                 raise ConnectionCreateError(tmp['msg'])
 
-            if 'id2' in tmp and tmp['id2']:
-                self.id2 = tmp['id2']
 
 
     def _write(self,data, read=True):
@@ -680,19 +680,10 @@ class Connection:
         """
         @selector if setting will direct select 
         """
-        if self.id2:
-            id = self.id
-            id2 = self.id2
-            m = 'op' + id + ","
-            m2 = 'op' + id2 + ","
-            msg = self._write(m.encode() + pickle.dumps(kwargs))
-            msg2 = self._write(m2.encode() + pickle.dumps(kwargs))
-            return msg
-        else:
-            id = self.id
-            m = 'op' + id + ","
-            msg = self._write(m.encode() + pickle.dumps(kwargs))
-            return msg
+        id = self.id
+        m = 'op' + id + ","
+        msg = self._write(m.encode() + pickle.dumps(kwargs))
+        return msg
 
     def info(self):
         id = self.id
@@ -703,11 +694,6 @@ class Connection:
         id = self.id
         m = 'rd' + id
         msg = self._write(m.encode())
-        if self.id2:
-            m2 = 'rd' + self.id2
-            msg2 = self._write(m.encode())
-            if msg2:
-                return msg2
         if callback:
             c = ConnectinoWaiter(self.data, callback=callback, loop=self.loop, policy=self.policy)
             c.start()
@@ -722,75 +708,35 @@ class Connection:
 
     def data(self, wait=False):
         id = self.id
-        id2 = self.id2
-        if id2:
-            m = 'da' + self.id
-            m2 = ''
+        m = 'da' + id
+    
 
 
-            d = self._write(m.encode(), read=True)
-            d2 = {'data':None}
-            if id2:
-                m2 = 'da' + self.id2
-                d2 = self._write(m2.encode(), read=True)
+        d = self._write(m.encode(), read=True)
 
-            if 'data' in d and d['data']:
-                log.debug(d['msg'])
-                return d['data']
-            else:
-                if 'data' in d2 and d2['data']:
-                    log.debug(d2['msg'])
-                    return d2['data']
-
-                if wait:
-                    timeout = 7
-                    if isinstance(wait, int):
-                        timeout = int(wait)
-                    s = time.time()
-                    while 1:
-                        if time.time() - s > timeout:
-                            break
-                        if d['data']:
-                            log.debug(d['msg'])
-                            return d['data']
-                        elif d2['data']:
-                            log.debug(d2['msg'])
-                            return d2['data']
-                    log.debug(d['msg'])
-                    return d['data']
-
+        if 'data' in d and d['data']:
+            log.debug(d['msg'])
+            return d['data']
         else:
-            m = 'da' + self.id
-        
 
-
-            d = self._write(m.encode(), read=True)
-
-            if 'data' in d and d['data']:
+            if wait:
+                timeout = 7
+                if isinstance(wait, int):
+                    timeout = int(wait)
+                s = time.time()
+                while 1:
+                    if time.time() - s > timeout:
+                        break
+                    if d['data']:
+                        log.debug(d['msg'])
+                        return d['data']
                 log.debug(d['msg'])
                 return d['data']
-            else:
-
-                if wait:
-                    timeout = 7
-                    if isinstance(wait, int):
-                        timeout = int(wait)
-                    s = time.time()
-                    while 1:
-                        if time.time() - s > timeout:
-                            break
-                        if d['data']:
-                            log.debug(d['msg'])
-                            return d['data']
-                    log.debug(d['msg'])
-                    return d['data']
 
     def __del__(self):
         self.close()
 
     def close(self):
-        if self.id2:
-            return self._write(b'cl' + self.id2.encode("utf8"))
         if self.id:
             return self._write(b'cl' + self.id.encode("utf8"))
 
@@ -824,7 +770,7 @@ class Connection:
 
 class HttpXp:
 
-    def __init__(self, url, *selector, agent=True, proxy=False,
+    def __init__(self, url, *selector, agent=True, random_agent=True, proxy=False,
                  socks_proxy='socks5://127.0.0.1:1080', **kargs):
         
         self.options = kargs
@@ -832,7 +778,11 @@ class HttpXp:
         self.url = url
         self.con = Connection(url)
         if agent:
-            self.options['headers'] = {"user-agent": USER_AGENTS[0]}
+            if random_agent:
+                ag = random.choice(USER_AGENTS)
+            else:
+                ag = USER_AGENTS[0]
+            self.options['headers'] = {"user-agent": ag}
         if proxy:
             self.options['proxy'] = socks_proxy
         self.con.options(**self.options)
@@ -841,14 +791,16 @@ class HttpXp:
         self.con.post(data=data)
         if callback:
             register = RedisListener(db=6)
-            register.regist(self.url, callback )
+            id = str(self.con.id)
+            register.regist(id, callback )
             register.run_loop(runtime)
 
     def get(self, callback=None, runtime=120):
         self.con.get()
         if callback:
             register = RedisListener(db=6)
-            register.regist(self.url, callback)
+            id = str(self.con.id)
+            register.regist(id, callback )
             register.run_loop(runtime)
 
 
