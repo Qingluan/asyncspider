@@ -117,6 +117,7 @@ class _AServer:
                 'kwargs':{'proxy':proxy},
                 'url': url,
                 'selector': '',
+                'db_to_save':'',
             }
             return id
         except asyncio.TimeoutError as e:
@@ -252,14 +253,30 @@ class _AServer:
         elif c == b'op':
             id, data = msg.split(b',', 1)
             options = pickle.loads(data)
+            selector = []
+            db_to_save = ''
+            h,tp = self.get_handler(id)
             if 'selector' in options:
                 selector = options.pop('selector').split("|")
                 log.info("selector load :" + " ".join(selector))
-            else:
-                selector = []
-            h,tp = self.get_handler(id)
+            if 'save_to_db' in options:
+                db_to_save = options.pop('save_to_db')
+                if 'es-host' in options:
+                    es_host = options.pop('es-host')
+                    h['es-host'] = es_host
+                if 'es-index' in options:
+                    es_index = options.pop('es-index')
+                    h['es-index'] = es_index
+                if 'es-filter' in options:
+                    es_filter = options.pop('es-filter')
+                    h['es-filter'] = es_filter
+                if 'es-type' in options:
+                    es_type = options.pop('es-type')
+                    h['es-type'] = es_type
+            
             log.info("options: {}".format(options))
             h['selector'] = selector
+            h['save_to_db'] = db_to_save
             if h:
                 if options:
                     if not 'kwargs' in h:
@@ -377,8 +394,9 @@ class _AServer:
                         if callback:
                             callback(data)
                         else:
+                            db_to = hand['save_to_db']
                             if 'selector' in h:
-                                log.info(colored(h['url'], 'blue') + " -> redis")
+                                log.info(colored(h['url'], 'blue') + db_to)
                                 await self.save_local(str(id), h, data)
                         break
                     else:
@@ -769,12 +787,22 @@ class Connection:
 
 
 class HttpXp:
+    '''
+    @es_save : save resonpse to es if true
+        @es_index : set index
+        @es_type: set type
+        @es_host:  exm: localhost:9200, xxx:xxx
+    '''
 
     def __init__(self, url, *selector, agent=True, random_agent=True, proxy=False,
+                 es_save=False,
                  socks_proxy='socks5://127.0.0.1:1080', **kargs):
         
         self.options = kargs
         self.options['selector'] = '|'.join(selector)
+        if es_save:
+            self.options['save_to_db'] = 'es'
+
         self.url = url
         self.con = Connection(url)
         if agent:

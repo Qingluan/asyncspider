@@ -1,8 +1,8 @@
 import asyncio
-import aioredis
+
 # from mroylib.config import Config
 import os
-import aiofiles
+
 from bs4 import BeautifulSoup as Bs
 from base64 import b64decode, b64encode
 from functools import partial
@@ -11,26 +11,64 @@ import pickle
 import time
 from redis import Redis
 import logging
+import json
+import re
 from concurrent.futures.thread import ThreadPoolExecutor
 from concurrent.futures import TimeoutError
 
+import asyncio
+try:
+    from aioelasticsearch import Elasticsearch
+except ImportError:
+    pass
+
+try:
+    import aiofiles
+except ImportError:
+    pass
+try:
+    import aioredis
+except ImportError:
+    pass
 
 encoder = lambda x: b64encode(pickle.dumps(x)).decode()
 decoder = lambda x: pickle.loads(b64decode(x))
 
 
-async def aio_db_save(id, hand, data,loop ):
+
+async def save_to_es(id, hand, data, loop ):
+    host= hand.get('es-host','localhost:9200')
+    index = hand.get('es-index', 'es-main')
+    doc_type = hand.get('es-type', 'es-doc')
+    filter = hand.get('es-filter')
+    if filter:
+        if re.search(filter, data):
+            logging.info("Filter:  %s" id)
+            return
+    try:
+        data = json.loads(data)
+    except json.JSONDecodeError:
+        pass
+    async with Elasticsearch([i for i in host.split(",")]) as es:
+        ret = await es.create(index,doc_type,id,data)
+        return ret
+
+
+async def save_to_redis(id, hand, data,loop ):
     m = {}
     redis = await aioredis.create_redis(
         'redis://localhost', db=6, loop=loop)
     if isinstance(data, dict) and 'error' in data:
         m = data
         soup = None
-    else:
+    elif data:
         soup = Bs(data, 'lxml')   
+    else:
+        soup = None
     
     selector = hand['selector']
-    if selector and soup:
+    m['html'] = data
+    if len(selector) > 0 and soup:
         m['tag'] = []
         for select_id in selector:
             if not select_id.strip():continue
@@ -38,16 +76,21 @@ async def aio_db_save(id, hand, data,loop ):
                 w = s.attrs
                 w['xml'] = s.decode()
                 m['tag'].append(w)
-    else:
-        m['html'] = data 
     await redis.set(id, encoder(m))
     redis.close()
     await redis.wait_closed()
 
+async def aio_db_save(id, hand, data,loop ):
+    if hand['save_to_db'] == 'redis':
+        await save_to_redis(id, hand, data, loop)
+    elif hand['save_to_db'] == 'es':
+        await save_to_es(id, hand, data, loop)
+    else:
+        pass
 
 class RedisListener:
 
-    exe = ThreadPoolExecutor(256)
+    exe = ThreadPoolExecutor(64)
     ok = set()    
     handler = dict()
     running_handle = []
