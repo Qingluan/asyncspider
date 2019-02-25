@@ -9,6 +9,7 @@ from functools import partial
 from termcolor import colored
 import pickle
 import time
+import datetime
 from redis import Redis
 import logging
 import json
@@ -37,14 +38,33 @@ decoder = lambda x: pickle.loads(b64decode(x))
 
 
 async def save_to_es(id, hand, data, loop ):
-    host= hand.get('es-host','localhost:9200')
-    index = hand.get('es-index', 'es-main')
-    doc_type = hand.get('es-type', 'es-doc')
-    filter = hand.get('es-filter')
+    host= hand.get('es_host','localhost:9200')
+    index = hand.get('es_index', 'es-main')
+    doc_type = hand.get('es_type', 'es-doc')
+    filter = hand.get('es_filter')
+    type = hand.get('type')
+    if type == 'json':
+        data = json.loads(data)
+    
     if filter:
-        if re.search(filter, data):
-            logging.info("Filter:  %s" % id)
-            return
+        if type == 'json':
+            filter_d = json.loads(filter)
+            
+            for k in filter_d:
+                vv = filter_d[k]
+                if isinstance(vv, list):
+                    if data.get(k) in vv:
+                        logging.info(colored("Filter:  %s from data: {}".format(data) % id, 'yellow', attrs=['bold']))
+                        return
+                else:
+                    if data.get(k) == vv:
+                        logging.info(colored("Filter:  %s from data: {}".format(data) % id, 'yellow', attrs=['bold']))
+                        return
+            
+        else:
+            if re.search(filter.encode('utf-8'), data):
+                logging.info(colored("Filter:  %s from data: {}".format(data[:100]) % id, 'yellow', attrs=['bold']))
+                return
     try:
         data = json.loads(data)
     except json.JSONDecodeError:
@@ -81,9 +101,9 @@ async def save_to_redis(id, hand, data,loop ):
     await redis.wait_closed()
 
 async def aio_db_save(id, hand, data,loop ):
-    if hand['save_to_db'] == 'redis':
+    if hand['db_to_save'] == 'redis':
         await save_to_redis(id, hand, data, loop)
-    elif hand['save_to_db'] == 'es':
+    elif hand['db_to_save'] == 'es':
         await save_to_es(id, hand, data, loop)
     else:
         pass
@@ -217,3 +237,47 @@ class RedisListener:
         return next(self.runtime_gen)
 
 #loop.run_until_complete(go())
+
+class Session(RedisListener):
+
+    def __init__(self, name=None, host='localhost', db=7, timeout=10,loop=None):
+        super().__init__(db=db, host=host, loop=loop, timeout=timeout)
+        self.name = name
+        self.loop = loop
+        if not name:
+            self.name = str(int(time.time()))
+    
+    def _buld_many(self, index, type, datas):
+        p = {'index': {'_index': index, '_type': type}}
+        body = []
+        for data in datas:
+            if isinstance(data, (tuple, list,)):
+                p['index']['_id'] = data[0]
+                v = data[1]
+            elif isinstance(data, dict):
+                v = data
+            else:
+                logging.warn(colored("include error type in data: {}".format(data), 'red'))
+                continue
+
+            if 'timestamp' not in v:
+                data['timestamp'] = datetime.datetime.now()
+            body.append(p)
+            body.append(v)
+        return '\n'.join([json.dumps(i) for i in body])
+
+        
+    async def bulk(self, index, type, data, id=None):
+        if not isinstance(data, dict):
+            return
+        k = self.name + "_" + index + "_" + type
+        k2 = index + "_" + type 
+        redis = await aioredis.create_redis(
+            'redis://localhost', db=7, loop=self.loop)
+        
+        d = self._buld_many(index, type, [data])
+        await redis.append(k, d + "\n")
+        await redis.hset(self.name, k2,  )
+
+    def __exit__(self):
+        pass

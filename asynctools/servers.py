@@ -14,6 +14,7 @@ import urllib.parse as up
 import async_timeout
 import aiosocks
 import aiohttp
+import json
 import time
 import random
 from termcolor import cprint, colored
@@ -160,7 +161,9 @@ class _AServer:
                     await response.release()
                 else:
                     try:
-                        return await response.text()
+                        text = await response.text()
+                        await response.release()
+                        return text
                     except Exception:
                         return await response.release()
 
@@ -256,27 +259,30 @@ class _AServer:
             selector = []
             db_to_save = ''
             h,tp = self.get_handler(id)
-            if 'selector' in options:
-                selector = options.pop('selector').split("|")
-                log.info("selector load :" + " ".join(selector))
-            if 'save_to_db' in options:
-                db_to_save = options.pop('save_to_db')
-                if 'es-host' in options:
-                    es_host = options.pop('es-host')
-                    h['es-host'] = es_host
-                if 'es-index' in options:
-                    es_index = options.pop('es-index')
-                    h['es-index'] = es_index
-                if 'es-filter' in options:
-                    es_filter = options.pop('es-filter')
-                    h['es-filter'] = es_filter
-                if 'es-type' in options:
-                    es_type = options.pop('es-type')
-                    h['es-type'] = es_type
+            # log.info("{}".format(options))
+            _REGIST_KEY = [
+                'selector',
+                'db_to_save',
+                'es_host',
+                'es_index', 
+                'es_filter', 
+                'es_type',
+                'type',
+            ]
             
-            log.info("options: {}".format(options))
-            h['selector'] = selector
-            h['save_to_db'] = db_to_save
+            for k in _REGIST_KEY:
+                if k in options:
+                    es_v = options.pop(k)
+                    if 'selector' == k:
+                        es_v = es_v.split("|")
+                        log.info("selector load :" + " ".join(es_v))
+                    h[k] = es_v
+                    log.info(colored('{} -> {}'.format(k, es_v), 'magenta'))
+            
+                # log.info(colored("db -> %s" % db_to_save, 'magenta'))
+                
+            
+            
             if h:
                 if options:
                     if not 'kwargs' in h:
@@ -394,16 +400,20 @@ class _AServer:
                         if callback:
                             callback(data)
                         else:
-                            db_to = hand['save_to_db']
+                            # log.info(colored("{}".format(h), 'green') )
+                            db_to = h['db_to_save']
                             if 'selector' in h:
                                 log.info(colored(h['url'], 'blue') + db_to)
+                                log.info(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)
                         break
                     else:
                         if data:
                             hand['data'] = data
+                            db_to = hand['db_to_save']
                             if 'selector' in hand:
-                                log.info(colored(hand['url'], 'blue', attrs=['bold']) + " -> redis %d" % (len(data))) 
+                                log.info(colored(hand['url'], 'blue', attrs=['bold']) + " -> %s %d" % (db_to, len(data) ) ) 
+                                log.info(colored(data[:100], "green"))
                                 await self.save_local(str(id), hand, data)
                             break
                         else:
@@ -791,6 +801,7 @@ class HttpXp:
     @es_save : save resonpse to es if true
         @es_index : set index
         @es_type: set type
+        @es_filter: set filter to re filter
         @es_host:  exm: localhost:9200, xxx:xxx
     '''
 
@@ -801,7 +812,9 @@ class HttpXp:
         self.options = kargs
         self.options['selector'] = '|'.join(selector)
         if es_save:
-            self.options['save_to_db'] = 'es'
+            self.options['db_to_save'] = 'es'
+        else:
+            self.options['db_to_save'] = 'redis'
 
         self.url = url
         self.con = Connection(url)
@@ -813,10 +826,13 @@ class HttpXp:
             self.options['headers'] = {"user-agent": ag}
         if proxy:
             self.options['proxy'] = socks_proxy
-        self.con.options(**self.options)
+        
+        if self.options.get('type') == 'json' and 'es_filter' in self.options:
+            self.options['es_filter'] = json.dumps(self.options['es_filter'])
+        
 
     def post(self,data, callback=None, runtime=10):
-        self.con.post(data=data)
+        self.con.post(data=data, **self.options)
         if callback:
             register = RedisListener(db=6)
             id = str(self.con.id)
@@ -824,6 +840,7 @@ class HttpXp:
             register.run_loop(runtime)
 
     def get(self, callback=None, runtime=120):
+        self.con.options(**self.options)
         self.con.get()
         if callback:
             register = RedisListener(db=6)
