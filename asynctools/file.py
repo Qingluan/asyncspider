@@ -43,7 +43,7 @@ async def save_to_es(id, hand, data, loop ):
     filter = hand.get('es-filter')
     if filter:
         if re.search(filter, data):
-            logging.info("Filter:  %s" id)
+            logging.info("Filter:  %s" % id)
             return
     try:
         data = json.loads(data)
