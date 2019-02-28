@@ -14,7 +14,6 @@ from redis import Redis
 import logging
 import json
 import re
-from getpass import getpass
 from concurrent.futures.thread import ThreadPoolExecutor
 from concurrent.futures import TimeoutError
 
@@ -75,7 +74,6 @@ async def save_to_es(id, hand, data, loop ):
         return ret
 
 
-
 async def save_to_redis(id, hand, data,loop ):
     m = {}
     redis = await aioredis.create_redis(
@@ -102,7 +100,6 @@ async def save_to_redis(id, hand, data,loop ):
     redis.close()
     await redis.wait_closed()
 
-
 async def aio_db_save(id, hand, data,loop ):
     sess = Session(name=hand['session_name'], loop=loop)
     tp = hand.get('type','')
@@ -111,8 +108,6 @@ async def aio_db_save(id, hand, data,loop ):
     if hand['db_to_save'] == 'redis':
         await save_to_redis(id, hand, data, loop)
     elif hand['db_to_save'] == 'es':
-        if not isinstance(data, dict):
-            data = {'raw':data}
         if sess.es_filter(hand, data):
             # logging.info(colored("%s" % type(data)))
             await sess.bulk(data, index=None, type=None, id=id)
@@ -448,18 +443,6 @@ class Session:
             await redis.hset(self.name+"-es",'cache', size)
         # await redis.close()
         redis.close()
-
-
-    async def clear_index(self,name, index):
-        async with Elasticsearch([i for i in self.host.split(",")]) as es:
-            ss = self.load_session(name)
-            pwd = self['passwd']
-            if pwd:
-                e = getpass("passwd :")
-                if e != pwd:
-                    logging.info("error passwd to delete all data in index: %s" %index)
-                    return 
-            return await es.indices.delete(index)
 
     def __exit__(self):
         size,doc = self.status()

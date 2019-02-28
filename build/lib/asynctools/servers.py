@@ -832,7 +832,6 @@ class HttpXp:
             session = self.__class__.session_name
         self.options['session_name'] = session
         self.options['db_to_save'] = db
-
         self.url = url
         self.con = Connection(url)
         if agent:
@@ -888,9 +887,6 @@ class HttpXp:
         return self.session.status_links()
 
     def post(self,data, callback=None, runtime=10):
-        if self.db_to_save == 'es':
-            assert self['doc'] != '|'
-            
         self.con.post(data=data, **self.options)
         if callback:
             register = RedisListener(db=6)
@@ -899,9 +895,6 @@ class HttpXp:
             register.run_loop(runtime)
 
     def get(self, callback=None, runtime=120):
-        if self.db_to_save == 'es':
-            assert self['doc'] != '|'
-
         self.con.options(**self.options)
         self.con.get()
         if callback:

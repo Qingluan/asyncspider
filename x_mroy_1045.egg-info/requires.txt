@@ -1,0 +1,10 @@
+async_timeout
+aioelasticsearch
+bs4
+lxml
+termcolor
+redis
+aiofiles
+aioredis
+aiosocks==0.2.6
+aiohttp==2.3.10
