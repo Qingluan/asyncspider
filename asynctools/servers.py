@@ -25,8 +25,11 @@ from asynctools.daemon import Daemon
 from asynctools.udp import open_remote_endpoint as open_udp_connection
 from asynctools.libs import loger
 from asynctools.file import aio_db_save, RedisListener, Session
+from asynctools.chains import recv_code
+from asynctools.chains import get_code
 # from qlib.io.tracepoint import trace_cls
 from asynctools.res import USER_AGENTS
+from asynctools.chains import Chains
 import traceback
 
 
@@ -112,7 +115,7 @@ class _AServer:
             id = self._create_id()
             # log.info('ready session : {}'.format(url))
             self.http_handlers[id] = {
-                'read': functools.partial(self._http_read, session, url),
+                'read': functools.partial(self._http_read, session),
                 'close':None,
                 'if_close': print,
                 'kwargs':{'proxy':proxy},
@@ -283,6 +286,7 @@ class _AServer:
                 'es_type',
                 'session_name',
                 'type',
+                'chains'
             ]
             
             for k in _REGIST_KEY:
@@ -291,6 +295,10 @@ class _AServer:
                     if 'selector' == k:
                         es_v = es_v.split("|")
                         log.info("selector load :" + " ".join(es_v))
+                    if 'chains' == k:
+                        _v = recv_code(es_v)
+                        es_v = _v(h)
+
                     h[k] = es_v
                     log.info(colored('{} -> {}'.format(k, es_v), 'magenta'))
             
@@ -378,8 +386,10 @@ class _AServer:
                     if st > 10:
                         log.error("[%s] [%s]" % (colored(hand['url'], 'red'), "try over"))
                         raise asyncio.TimeoutError("socket seemd closed")
-
-                    waiter = read(session_name=hand['session_name'],**kwargs)
+                    if 'chains' in hand:
+                        hand['chains'].next()
+                    url = hand['url']
+                    waiter = read(url,session_name=hand['session_name'],**kwargs)
                     data = await asyncio.wait_for(waiter, timeout=12)
 
                     if isinstance(data, str):
@@ -412,6 +422,7 @@ class _AServer:
                     hand_bak = h
                     if h:
                         h['data'] = data
+
                         if callback:
                             callback(data)
                         else:
@@ -421,6 +432,8 @@ class _AServer:
                                 log.info(colored(h['url'], 'blue') + db_to)
                                 log.info(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)
+                        if 'chains' in h and h['chains'].order < h['chains'].turn:
+                            continue
                         break
                     else:
                         if data:
@@ -851,6 +864,7 @@ class HttpXp:
         self.es_filter = self.options.get('es_filter')
         self.db_to_save = self.options.get('db_to_save', 'redis')
         self.session = Session.load_session(session)
+        self.chains = None
 
     @classmethod
     def get_session(cls, name):
@@ -887,6 +901,13 @@ class HttpXp:
     def status_links(self):
         return self.session.status_links()
 
+    def add_chains(self, Chains_obj, handle):
+        if hasattr(Chains_obj, 'next'):
+            obj = get_code(Chains_obj, handle, Chains_obj.__name__ + ".chains_handler=" + handle.__name__)
+            self.con.options(chains=obj)
+        else:
+            print('no chains')
+
     def post(self,data, callback=None, runtime=10):
         if self.db_to_save == 'es':
             assert self['doc'] != '|'
@@ -897,6 +918,8 @@ class HttpXp:
             id = str(self.con.id)
             register.regist(id, callback )
             register.run_loop(runtime)
+        if 'chains' in self.options:
+            del self.options['chains']
 
     def get(self, callback=None, runtime=120):
         if self.db_to_save == 'es':
@@ -909,6 +932,8 @@ class HttpXp:
             id = str(self.con.id)
             register.regist(id, callback )
             register.run_loop(runtime)
+        if 'chains' in self.options:
+            del self.options['chains']
 
     def __repr__(self):
         return "Session_" + self.session.name
