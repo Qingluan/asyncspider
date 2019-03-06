@@ -35,6 +35,27 @@ import traceback
 
 log = loger()
 
+class DyImport:
+    objs = {}
+    
+    @classmethod
+    def dynamic_import(cls, name, code):
+        O = recv_code(code)
+        cls.objs[name] = O
+
+    @classmethod
+    def use(cls, hand, name):
+        o = cls.objs.get(name)
+        if o:
+            hand['chains'] = o(hand)
+            log.info("--load Chains : %s" % name)
+            return True
+        del hand['chains']
+        return False
+
+    # @classmethod
+    # def dynamic_check()
+
 def _r(port=12888):
     a = _AServer(port=port)
     a.run()
@@ -93,7 +114,7 @@ class _AServer:
             await self.queue.put("timeout :tcp: " + ip)
             return
         except socket.error as e:
-            log.error(e)
+            # log.error(e)
             await self.queue.put(e)
             return
 
@@ -131,7 +152,7 @@ class _AServer:
         except Exception as e:
             traceback.print_stack()
             session.close()
-            log.error(e)
+            # log.error(e)
             if id in self.http_handlers:
                 await self.close(id)
             return
@@ -160,14 +181,14 @@ class _AServer:
                         # trance url if ok
                         await Session.trace(session_name, url, ok=True)
                         await response.release()
-                        response.close()
+                        await session.close()
                         return text
                     except Exception:
-                        response.close()
-                        return await response.release()
+                        await response.release()
+                        await session.close()
         elif m =='post':
             async with session.post(url, **kwargs) as response:
-                log.info('post : {}'.format(url))
+                log.debug('post : {}'.format(url))
                 if not response.status == 200:
                     log.error("Error: %s" % colored(str(response.status), 'red'))
                     await response.release()
@@ -178,11 +199,12 @@ class _AServer:
                         text = await response.text()
                         await Session.trace(session_name, url, ok=True)
                         await response.release()
-                        response.close()
+                        await session.close()
                         return text
                     except Exception:
-                        response.close()
-                        return await response.release()
+                        await response.release()
+                        await session.close()
+                        return 
 
 
 
@@ -222,7 +244,7 @@ class _AServer:
             writer.write(data)
 
     async def commander(self,reader, writer):
-        log.info(f"create tcp : {len(self.tcp_handlers)} http: {len(self.http_handlers)} ")
+        log.debug(f"create tcp : {len(self.tcp_handlers)} http: {len(self.http_handlers)} ")
 
         data = await reader.read(65534)
         # log.info("recv from " + str(writer.get_extra_info('peername')))
@@ -289,21 +311,33 @@ class _AServer:
                 'chains'
             ]
             
+            dy_import = False
             for k in _REGIST_KEY:
                 if k in options:
                     es_v = options.pop(k)
                     if 'selector' == k:
                         es_v = es_v.split("|")
-                        log.info("selector load :" + " ".join(es_v))
+                        log.debug("selector load :" + " ".join(es_v))
                     if 'chains' == k:
-                        _v = recv_code(es_v)
-                        es_v = _v(h)
+                        if es_v == 'redis':
+                            dy_import = True
+                        else:
+                            _v = recv_code(es_v)
+                            es_v = _v(h)
 
                     h[k] = es_v
                     log.info(colored('{} -> {}'.format(k, es_v), 'magenta'))
             
                 # log.info(colored("db -> %s" % db_to_save, 'magenta'))
-                
+            if dy_import:
+                _s_name = h['session_name']
+                O = DyImport.use(h, _s_name)
+                if not O:
+                    log.info('loading module in '+_s_name)
+                    s = Session(name=_s_name)
+                    code = await s.get_code()
+                    DyImport.dynamic_import(_s_name ,code)
+                    DyImport.use(h, _s_name)
             
             
             if h:
@@ -429,8 +463,8 @@ class _AServer:
                             # log.info(colored("{}".format(h), 'green') )
                             db_to = h['db_to_save']
                             if 'selector' in h:
-                                log.info(colored(h['url'], 'blue') + db_to)
-                                log.info(colored(data[:100], "green"))
+                                log.debug(colored(h['url'], 'blue') + db_to)
+                                log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)
                         if 'chains' in h and h['chains'].order < h['chains'].turn:
                             continue
@@ -441,7 +475,7 @@ class _AServer:
                             db_to = hand['db_to_save']
                             if 'selector' in hand:
                                 log.info(colored(hand['url'], 'blue', attrs=['bold']) + " -> %s %d" % (db_to, len(data) ) ) 
-                                log.info(colored(data[:100], "green"))
+                                log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), hand, data)
                             break
                         else:
@@ -458,8 +492,11 @@ class _AServer:
                 else:
                     await self.retry_http(str(id), hand, callback, proxy)
             except Exception as e:
-                log.error("404: %s" % str(e))
-                log.exception(e)
+                if 'Unclosed' in str(e):
+                    pass
+                else:
+                    log.error("404: %s" % str(e))
+                    log.exception(e)
                 # traceback.print_stack()
                 await self.retry_http(str(id), hand, callback, proxy)
 
@@ -502,7 +539,7 @@ class _AServer:
         self.loop.close()
 
     async def close(self, id):
-        log.info('close id: {id}'.format(id=id))
+        log.debug('close id: {id}'.format(id=id))
         h,t = self.get_handler(id)
         if t == 'tcp':
             h['close']()
@@ -834,10 +871,14 @@ class HttpXp:
 
     '''
     session_name = 'default'
-    def __init__(self, url, *selector, agent=True, random_agent=True, proxy=False,
-                 db='redis',
-                 session=None,
-                 socks_proxy='socks5://127.0.0.1:1080', **kargs):
+    def __init__(self, url, *selector, 
+        session=None,
+        agent=True,
+        random_agent=True,
+        proxy=False,
+        db='redis',         
+        socks_proxy='socks5://127.0.0.1:1080',
+        **kargs):
         
         self.options = kargs
         self.options['selector'] = '|'.join(selector)
@@ -867,10 +908,10 @@ class HttpXp:
         self.chains = None
 
     @classmethod
-    def get_session(cls, name):
+    def get_session(cls, name, index=None, doc_type=None):
         if not name:
             name = cls.session_name
-        return Session.load_session(name)
+        return Session.load_session(name, index=index, type=doc_type)
 
     @classmethod
     def create_session(cls, name, index='', type=''):
@@ -901,10 +942,22 @@ class HttpXp:
     def status_links(self):
         return self.session.status_links()
 
-    def add_chains(self, Chains_obj, handle):
+    def add_chains(self, Chains_obj, handle=None, end_handler=None,turn=-1):
         if hasattr(Chains_obj, 'next'):
-            obj = get_code(Chains_obj, handle, Chains_obj.__name__ + ".chains_handler=" + handle.__name__)
-            self.con.options(chains=obj)
+            _han = []
+            if end_handler:
+                _han.append(end_handler)
+                _han.append(Chains_obj.__name__ + ".end_handler=" + end_handler.__name__)
+            if handle:
+                _han.append(handle)
+                _han.append(Chains_obj.__name__ + ".chains_handler=" + handle.__name__)
+
+            _han.append(Chains_obj.__name__ + ".turn=" + str(turn))
+
+            obj = get_code(Chains_obj, *_han)
+            
+            self.session.add_listener(obj)
+            self.con.options(chains='redis', session_name= self.options['session_name'])
         else:
             print('no chains')
 

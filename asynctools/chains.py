@@ -19,6 +19,7 @@ import  logging
 import  tabulate
 import inspect
 from termcolor import colored, HIGHLIGHTS
+import  redis
 from types import FunctionType
 
 log_str = """
@@ -61,7 +62,7 @@ def show_debug(*args, **kargs):
 
 
 class Chains:
-	turn = 5
+	turn = 1
 	def __init__(self, hand):
 		self.hand = hand
 		self.turn = self.__class__.turn
@@ -80,6 +81,9 @@ class Chains:
 		show_debug(self.order, *args, **self.hand['kwargs'].get('headers'))
 		# logging.info(colored(inspect.getsource(self.chains_handler), attrs=['bold']))
 		self.chains_handler()
+
+	def end_handler(self, o):
+		return  o
 
 	def set_handle(self, handle):
 		self.chains_handler = handle
@@ -116,13 +120,15 @@ def import_from_tmp(ff):
 	os.remove(ff)
 	return  tmp_chains.Chains
 
+
 def recv_code(code):
 	if isinstance(code, str):
 		code = code.encode('utf-8')
 	ff = time.time()
 	with open('/tmp/' + str(ff), 'wb') as fp:
 		fp.write((log_str+"\n").encode('utf-8'))
-		fp.write(b64decode(code))
+		d = b64decode(code)
+		fp.write(d)
 	return  import_from_tmp('/tmp/' + str(ff))
 
 

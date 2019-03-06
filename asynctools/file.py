@@ -20,7 +20,9 @@ from concurrent.futures import TimeoutError
 
 import asyncio
 try:
+    import inspect
     from aioelasticsearch import Elasticsearch
+    from aioelasticsearch.helpers import Scan
 except ImportError:
     pass
 
@@ -107,15 +109,34 @@ async def aio_db_save(id, hand, data,loop ):
     sess = Session(name=hand['session_name'], loop=loop)
     tp = hand.get('type','')
     if tp == 'json':
-        data = json.loads(data)
+        try:
+            data = json.loads(data)
+        except TypeError:
+            logging.error(colored(data, 'red'))
+            return
+    if 'chains' in hand:
+        logging.info("--- chains --- ")
+        
+        try:
+            data = hand['chains'].end_handler(data)
+        except Exception as e:
+            logging.error(colored(e, 'red'))
+            return
+
     if hand['db_to_save'] == 'redis':
         await save_to_redis(id, hand, data, loop)
     elif hand['db_to_save'] == 'es':
-        if not isinstance(data, dict):
+        if isinstance(data, list):
+            for _data in data:
+                # logging.debug(str(_data))
+                await sess.bulk(_data, index=None, type=None)
+            return
+        elif not isinstance(data, dict):
             data = {'raw':data}
-        if sess.es_filter(hand, data):
+
             # logging.info(colored("%s" % type(data)))
-            await sess.bulk(data, index=None, type=None, id=id)
+        if not sess.es_filter(hand, data):return
+        await sess.bulk(data, index=None, type=None, id=id)
         # await save_to_es(id, hand, data, loop)
     else:
         logging.error(colored("no suported type: %s" % tp, 'red'))
@@ -281,20 +302,29 @@ class Session:
         r = Redis(db=self.db, decode_responses='utf-8')
         size = r.hget(self.name + "-es", 'cache')
         doc = r.hget(self.name + "-es", 'doc')
-        return  size, doc
+        code = r.hget(self.name + "-es", 'code')
+        return  size,doc, b64decode(code.encode('utf-8'))
 
     def init(self, index='', type=''):
         r = Redis(db=7, decode_responses='utf-8')
         r.hset('sess-manager', self.name, 'init')
         r.hset(self.name+"-es", 'cache', 0)
+        if not index:
+            index = self.name.lower()
+        if not type:
+            type = self.name.lower()
         r.hset(self.name+"-es", 'doc', index + '|' + type)
         # r.hset(self.name + "-http", key, value)
+
+    def clear_listener(self):
+        r = Redis(db=7, decode_responses='utf-8')
+        r.hset(self.name + "-es", 'code', '')
 
     def clear_data(self):
         r = Redis(db=7, decode_responses='utf-8')
         if self.name in r.hkeys('sess-manager'):
             r.hset(self.name+"-es", 'cache', 0)
-            r.hset(self.name+"-es", 'doc', index + '|' + type)
+            # r.hset(self.name+"-es", 'doc', index + '|' + type)
             r.delete(self.name + '-datas')
     
     def __getitem__(self, k):
@@ -356,13 +386,17 @@ class Session:
         set the res if ok
         """
         redis = await aioredis.create_redis('redis://localhost', db=7)
-        logging.info("trace: %s" % colored(link, 'green'))
+        logging.debug("trace: %s" % colored(link, 'green'))
         await redis.hset(name + "-http", link, str(ok))
         redis.close()
 
     def status_links(self):
         redis =  Redis(host='localhost', db=7, decode_responses='utf-8')
         return  redis.hgetall(self.name+"-http")
+
+    def ready_save(self):
+        r = Redis(db=7, decode_responses='utf-8')
+        r.hset("sess-manager", self.name, "init")
 
 
     def _buld_many(self, index, type, datas):
@@ -402,12 +436,18 @@ class Session:
                 # await 
                 redis.close()
 
+            redis = await aioredis.create_redis('redis://localhost',db=7,loop=self.loop)
             res = await es.bulk(datas)
+            await redis.hset("sess-manager", self.name, "init")
+            
             if not  res['errors']:
-                redis = await aioredis.create_redis('redis://localhost',db=7,loop=self.loop)
-                await redis.delete(self.name+"-datas")
-                await redis.hset(self.name+"-es",'cache', 0)
-                await redis.hset("sess-manager", self.name, "init")
+                await redis.delete(self.name+"-datas")                    
+                
+                bakdata =  await redis.lrange(self.name + "-datas-bak", 0, -1)
+                si = await redis.lpush(self.name+ '-datas', *bakdata)
+                await redis.delete(self.name + "-datas-bak")
+
+                await redis.hset(self.name+"-es",'cache', si)
                 logging.info(colored('save ok ', 'green'))
                 redis.close()
             else:
@@ -420,25 +460,51 @@ class Session:
         redis.close()
         return [pickle.loads(b64decode(i)) for i in  data]
     
-    async def tmp_to_redis(self, data):
+    async def tmp_to_redis(self, data, bak=False):
         redis = await aioredis.create_redis('redis://localhost', db=7)
         data = b64encode(pickle.dumps(data))
-        res =  await redis.lpush(self.name+"-datas", data)
+        if not bak:
+            res =  await redis.lpush(self.name+"-datas", data)
+        else:
+            res =  await redis.lpush(self.name+"-datas-bak", data)
+
         redis.close()
         return res
+
+    async def es_range(self, index, tp, *keys, call=None, **query):
+        
+        async with Elasticsearch([self.host]) as es:
+            async with Scan(
+                es,
+                index=index,
+                doc_type=tp,
+                query=query,
+            ) as scan:
+            
+                res = []
+                async for doc in scan:
+                    d = doc['_source']
+                    if call:
+                        call(d)
+                    else:
+                        dd = {}
+                        for k in keys:
+                            km = k.split(':')
+                            v = d
+                            for kk in km:
+                                v = v.get(kk)
+                                if not v:break
+                            dd[k] =v
+                        res.append(dd)
+                return res
+
+                    
 
     async def bulk(self,  data, index=None, type=None, id=None):
         if not isinstance(data, dict):
             return
         redis = await aioredis.create_redis(
             'redis://localhost', db=7, loop=self.loop)
-
-        status = await redis.hget('sess-manager', self.name, encoding='utf-8')
-        if status == 'init':
-            await redis.hset('sess-manager', self.name, 'saving')
-        elif status == 'saving':
-            logging.info(colored('saving ... wait', 'green'))
-            return
 
         if not index:
             index, _ = (await redis.hget(self.name + "-es", 'doc', encoding='utf-8')).split("|")
@@ -451,20 +517,40 @@ class Session:
 
         d = self._buld_many(index, type, [data])
         # await redis.append(k, d + "\n")
-        size = await self.tmp_to_redis(d)
+        status = await redis.hget('sess-manager', self.name, encoding='utf-8')
+        
+        if status == 'saving':
+            size = await self.tmp_to_redis(d,bak=True)
+        else:
+            size = await self.tmp_to_redis(d)
+        await redis.hset(self.name+"-es",'cache', size)
+            
         # await redis.hset(self.name, 'save', now + 1)
-        if size > 1024:
+        if size > 2048:
+            if status =='saving':
+                logging.info(colored('saving ... wait', 'green'))
+                return
+            else:
+                await redis.hset('sess-manager', self.name, 'saving')
             datas = await self.tmp_from_redis()
             q = []
             for h,v in datas:
                 q.append(h)
                 q.append(v)
             await self.save_to_es(q)
-        else:
-            await redis.hset(self.name+"-es",'cache', size)
-        # await redis.close()
+
         redis.close()
 
+    def add_listener(self, code):
+        r = Redis(db=7)
+        r.hset(self.name+"-es", 'code', code)
+
+    async def get_code(self):
+        redis = await aioredis.create_redis(
+            'redis://localhost', db=7, loop=self.loop)
+        code = await redis.hget(self.name + "-es", "code", encoding='utf-8')
+        redis.close()
+        return code
 
     async def clear_index(self,name, index):
         async with Elasticsearch([i for i in self.host.split(",")]) as es:
