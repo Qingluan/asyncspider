@@ -289,6 +289,13 @@ class Session:
         r.hset(self.name+"-es", 'cache', 0)
         r.hset(self.name+"-es", 'doc', index + '|' + type)
         # r.hset(self.name + "-http", key, value)
+
+    def clear_data(self):
+        r = Redis(db=7, decode_responses='utf-8')
+        if self.name in r.hkeys('sess-manager'):
+            r.hset(self.name+"-es", 'cache', 0)
+            r.hset(self.name+"-es", 'doc', index + '|' + type)
+            r.delete(self.name + '-datas')
     
     def __getitem__(self, k):
         r = Redis(db=7, decode_responses='utf-8')
@@ -400,6 +407,8 @@ class Session:
                 redis = await aioredis.create_redis('redis://localhost',db=7,loop=self.loop)
                 await redis.delete(self.name+"-datas")
                 await redis.hset(self.name+"-es",'cache', 0)
+                await redis.hset("sess-manager", self.name, "init")
+                logging.info(colored('save ok ', 'green'))
                 redis.close()
             else:
                 logging.error(colored('{}'.format(res), 'red'))
@@ -423,6 +432,13 @@ class Session:
             return
         redis = await aioredis.create_redis(
             'redis://localhost', db=7, loop=self.loop)
+
+        status = await redis.hget('sess-manager', self.name, encoding='utf-8')
+        if status == 'init':
+            await redis.hset('sess-manager', self.name, 'saving')
+        elif status == 'saving':
+            logging.info(colored('saving ... wait', 'green'))
+            return
 
         if not index:
             index, _ = (await redis.hget(self.name + "-es", 'doc', encoding='utf-8')).split("|")
