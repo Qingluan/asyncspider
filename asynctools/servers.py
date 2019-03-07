@@ -10,6 +10,7 @@ from multiprocessing import Process
 import multiprocessing
 from threading import Thread
 from contextlib import contextmanager
+from bs4 import BeautifulSoup as Bs
 import urllib.parse as up
 import async_timeout
 import aiosocks
@@ -31,6 +32,7 @@ from asynctools.chains import get_code
 from asynctools.res import USER_AGENTS
 from asynctools.chains import Chains
 import traceback
+import logging
 
 
 log = loger()
@@ -122,11 +124,17 @@ class _AServer:
         self.tcp_handlers[id] = {'write': writer.write, 'read':reader.read, 'if_close': False, 'close':writer.close}
         return id
 
+    def _set_cookie(self, sess, url, key, val):
+        host = aiohttp.cookiejar.URL(url).host
+        cookie = sess._cookie_jar._cookies.get(host, aiohttp.cookiejar.SimpleCookie())
+        cookie[key] = val
+
     async def _http(self, url, port, timeout=7, **kwargs):
         conn = ProxyConnector()
         if isinstance(url, bytes):
             url = url.decode("utf8", "ignore")
-        session =  aiohttp.ClientSession(loop=self.loop, connector=conn, request_class=ProxyClientRequest)
+        jar = aiohttp.CookieJar(unsafe=True)
+        session =  aiohttp.ClientSession(loop=self.loop, connector=conn, request_class=ProxyClientRequest, cookie_jar=jar)
         try:
             proxy = None
             if 'proxy' in kwargs:
@@ -141,6 +149,7 @@ class _AServer:
                 'if_close': print,
                 'kwargs':{'proxy':proxy},
                 'url': url,
+                "sess":session,
                 'selector': '',
                 'db_to_save':'',
                 'session_name': 'default'
@@ -942,21 +951,13 @@ class HttpXp:
     def status_links(self):
         return self.session.status_links()
 
+    def use_chains(self):
+        self.options['chains'] = 'redis'
+        self.con.options(chains='redis', session_name = self.session.name)
+
     def add_chains(self, Chains_obj, handle=None, end_handler=None,turn=-1):
         if hasattr(Chains_obj, 'next'):
-            _han = []
-            if end_handler:
-                _han.append(end_handler)
-                _han.append(Chains_obj.__name__ + ".end_handler=" + end_handler.__name__)
-            if handle:
-                _han.append(handle)
-                _han.append(Chains_obj.__name__ + ".chains_handler=" + handle.__name__)
-
-            _han.append(Chains_obj.__name__ + ".turn=" + str(turn))
-
-            obj = get_code(Chains_obj, *_han)
-            
-            self.session.add_listener(obj)
+            self.session.set_handler(Chains_obj, end_handler=end_handler, handle=handle, turn=turn)
             self.con.options(chains='redis', session_name= self.options['session_name'])
         else:
             print('no chains')

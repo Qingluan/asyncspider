@@ -18,6 +18,8 @@ from getpass import getpass
 from concurrent.futures.thread import ThreadPoolExecutor
 from concurrent.futures import TimeoutError
 
+from .chains import  get_code
+
 import asyncio
 try:
     import inspect
@@ -540,6 +542,21 @@ class Session:
             await self.save_to_es(q)
 
         redis.close()
+
+    def set_handler(self, Chains_obj, end_handler=None, handle=None, turn=-1):
+        if hasattr(Chains_obj, 'next'):
+            _han = []
+            if end_handler:
+                _han.append(end_handler)
+                _han.append(Chains_obj.__name__ + ".end_handler=" + end_handler.__name__)
+            if handle:
+                _han.append(handle)
+                _han.append(Chains_obj.__name__ + ".chains_handler=" + handle.__name__)
+
+            _han.append(Chains_obj.__name__ + ".turn=" + str(turn))
+
+            obj = get_code(Chains_obj, *_han)
+            self.add_listener(obj)
 
     def add_listener(self, code):
         r = Redis(db=7)
