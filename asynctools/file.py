@@ -88,7 +88,10 @@ async def save_to_redis(id, hand, data,loop ):
         m = data
         soup = None
     elif data:
-        soup = Bs(data, 'lxml')   
+        if isinstance(data, str):
+            soup = Bs(data, 'lxml')
+        elif isinstance(data, list):
+            m['html'] = data       
     else:
         soup = None
     
@@ -117,28 +120,31 @@ async def aio_db_save(id, hand, data,loop ):
             logging.error(colored(data, 'red'))
             return
     if 'chains' in hand:
-        logging.info("--- chains --- ")
+        c = hand['chains']
+        logging.info("--- chains --- turn:%d | order: %d" %(c.turn, c.order))
         
         try:
             data = hand['chains'].end_handler(data)
+            if not data:
+                return
         except Exception as e:
             logging.error(colored(e, 'red'))
             return
+
 
     if hand['db_to_save'] == 'redis':
         await save_to_redis(id, hand, data, loop)
     elif hand['db_to_save'] == 'es':
         if isinstance(data, list):
-            for _data in data:
+            # for _data in data:
                 # logging.debug(str(_data))
-                await sess.bulk(_data, index=None, type=None)
+            await sess.bulk(data, index=None, type=None)
             return
         elif not isinstance(data, dict):
             data = {'raw':data}
-
             # logging.info(colored("%s" % type(data)))
         if not sess.es_filter(hand, data):return
-        await sess.bulk(data, index=None, type=None, id=id)
+        await sess.bulk(data, index=None, type=None)
         # await save_to_es(id, hand, data, loop)
     else:
         logging.error(colored("no suported type: %s" % tp, 'red'))
@@ -328,6 +334,7 @@ class Session:
             r.hset(self.name+"-es", 'cache', 0)
             # r.hset(self.name+"-es", 'doc', index + '|' + type)
             r.delete(self.name + '-datas')
+            r.delete(self.name + '-datas-bak')
     
     def __getitem__(self, k):
         r = Redis(db=7, decode_responses='utf-8')
@@ -405,10 +412,10 @@ class Session:
         p = {'index': {'_index': index, '_type': type}}
         body = []
         for data in datas:
-            if isinstance(data, (tuple, list,)):
-                p['index']['_id'] = data[0]
-                v = data[1]
-            elif isinstance(data, dict):
+            _b = []
+            if isinstance(data, dict):
+                # tm = str(time.time())
+                # p['index']['_id'] = tm
                 v = data
             else:
                 logging.warn(colored("include error type in data: {}".format(data), 'red'))
@@ -416,8 +423,10 @@ class Session:
 
             if 'timestamp' not in v:
                 data['timestamp'] = datetime.datetime.now()
-            body.append(p)
-            body.append(v)
+            _b = [p,v]
+
+            body.append(_b)
+            
         return body
 
     async def save_to_es(self, datas=None, loop=None):
@@ -443,16 +452,27 @@ class Session:
             await redis.hset("sess-manager", self.name, "init")
             
             if not  res['errors']:
-                await redis.delete(self.name+"-datas")                    
+                si = await redis.llen(self.name+"-datas")                    
                 
-                bakdata =  await redis.lrange(self.name + "-datas-bak", 0, -1)
-                si = await redis.lpush(self.name+ '-datas', *bakdata)
-                await redis.delete(self.name + "-datas-bak")
+                # bakdata =  await redis.lrange(self.name + "-datas-bak", 0, -1)
+                # si = await redis.lpush(self.name+ '-datas', *bakdata)
+                # await redis.delete(self.name + "-datas-bak")
 
                 await redis.hset(self.name+"-es",'cache', si)
                 logging.info(colored('save ok ', 'green'))
                 redis.close()
             else:
+                # errors = [i for i in res['items'] if i['index']['status'] != 201]
+                # if len(errors) * 100 / len( res[0]['items']) == 0:
+                si = await redis.llen(self.name+"-datas")                    
+                
+                # bakdata =  await redis.lrange(self.name + "-datas-bak", 0, -1)
+                # si = await redis.lpush(self.name+ '-datas', *bakdata)
+                # await redis.delete(self.name + "-datas-bak")
+
+                await redis.hset(self.name+"-es",'cache', si)
+                logging.info(colored('save ok ', 'green'))
+                redis.close()
                 logging.error(colored('{}'.format(res), 'red'))
             return res
 
@@ -462,16 +482,20 @@ class Session:
         redis.close()
         return [pickle.loads(b64decode(i)) for i in  data]
     
+    # async def rm_flush(self, redis, datas)
+
     async def tmp_to_redis(self, data, bak=False):
         redis = await aioredis.create_redis('redis://localhost', db=7)
-        data = b64encode(pickle.dumps(data))
+        data = [b64encode(pickle.dumps(i)) for i in data]
         if not bak:
-            res =  await redis.lpush(self.name+"-datas", data)
+            res =  await redis.lpush(self.name+"-datas", *data)
         else:
-            res =  await redis.lpush(self.name+"-datas-bak", data)
+            res =  await redis.lpush(self.name+"-datas-bak", *data)
 
+        
+        l = await redis.llen(self.name + "-datas")
         redis.close()
-        return res
+        return l
 
     async def es_range(self, index, tp, *keys, call=None, **query):
         
@@ -502,8 +526,8 @@ class Session:
 
                     
 
-    async def bulk(self,  data, index=None, type=None, id=None):
-        if not isinstance(data, dict):
+    async def bulk(self,  data, index=None, type=None):
+        if not isinstance(data, (dict,list,)):
             return
         redis = await aioredis.create_redis(
             'redis://localhost', db=7, loop=self.loop)
@@ -516,29 +540,37 @@ class Session:
         k = self.name + "_" + index + "_" + type
         k2 = index + "_" + type
         
-
-        d = self._buld_many(index, type, [data])
+        if isinstance(data, list):
+            d = self._buld_many(index, type, data)
+        else:
+            d = self._buld_many(index, type, [data])
         # await redis.append(k, d + "\n")
         status = await redis.hget('sess-manager', self.name, encoding='utf-8')
         
-        if status == 'saving':
-            size = await self.tmp_to_redis(d,bak=True)
-        else:
-            size = await self.tmp_to_redis(d)
+        # if status == 'saving':
+        #     size = await self.tmp_to_redis(d,bak=True)
+        # else:
+        size = await self.tmp_to_redis(d)
         await redis.hset(self.name+"-es",'cache', size)
-            
+        logging.info("save size: %s" %colored(size, 'blue'))
         # await redis.hset(self.name, 'save', now + 1)
-        if size > 2048:
-            if status =='saving':
-                logging.info(colored('saving ... wait', 'green'))
-                return
-            else:
-                await redis.hset('sess-manager', self.name, 'saving')
-            datas = await self.tmp_from_redis()
+        if size > 4096:
+            # if status =='saving':
+            #     logging.info(colored('saving ... wait', 'green'))
+            #     return
+            # else:
+            #     await redis.hset('sess-manager', self.name, 'saving')
             q = []
-            for h,v in datas:
+            for i in range(4096):
+                one = await redis.lpop(self.name + "-datas")
+                h,v = pickle.loads(b64decode(one))
                 q.append(h)
                 q.append(v)
+            # datas = [pickle.loads(b64decode(i)) for i in  _das]
+            # q = []
+            # for h,v in datas:
+            #     q.append(h)
+            #     q.append(v)
             await self.save_to_es(q)
 
         redis.close()
@@ -556,18 +588,20 @@ class Session:
             _han.append(Chains_obj.__name__ + ".turn=" + str(turn))
 
             obj = get_code(Chains_obj, *_han)
-            self.add_listener(obj)
+            self.add_listener(obj, classname=Chains_obj.__name__)
 
-    def add_listener(self, code):
+    def add_listener(self, code, classname="Chains"):
         r = Redis(db=7)
         r.hset(self.name+"-es", 'code', code)
+        r.hset(self.name+"-es", 'classname', classname)
 
     async def get_code(self):
         redis = await aioredis.create_redis(
             'redis://localhost', db=7, loop=self.loop)
         code = await redis.hget(self.name + "-es", "code", encoding='utf-8')
+        code_name = await redis.hget(self.name + "-es", "classname", encoding='utf-8')
         redis.close()
-        return code
+        return code, code_name
 
     async def clear_index(self,name, index):
         async with Elasticsearch([i for i in self.host.split(",")]) as es:

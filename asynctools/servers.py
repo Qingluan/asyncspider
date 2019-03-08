@@ -41,8 +41,8 @@ class DyImport:
     objs = {}
     
     @classmethod
-    def dynamic_import(cls, name, code):
-        O = recv_code(code)
+    def dynamic_import(cls, name, code, code_name):
+        O = recv_code(code, code_name)
         cls.objs[name] = O
 
     @classmethod
@@ -129,6 +129,21 @@ class _AServer:
         cookie = sess._cookie_jar._cookies.get(host, aiohttp.cookiejar.SimpleCookie())
         cookie[key] = val
 
+    async def _http_stream_read(self, resp):
+        datas = b''
+        c_iter = resp.content.iter_any().__aiter__()
+        while 1:
+            try:
+                data = await asyncio.wait_for(c_iter.__anext__(), timeout=4)
+                datas += data
+            except asyncio.futures.TimeoutError:
+                break
+            except StopAsyncIteration:
+                break
+            except Exception as e:
+                raise e
+        return datas
+
     async def _http(self, url, port, timeout=7, **kwargs):
         conn = ProxyConnector()
         if isinstance(url, bytes):
@@ -169,7 +184,7 @@ class _AServer:
     async def _http_release(self, response):
         return await response.release()
 
-    async def _http_read(self, session, url,session_name='default', **kwargs):
+    async def _http_read(self, session, url,session_name='default',use_chains=False, **kwargs):
 
         m = kwargs.get('method', 'get')
         #selector = kwargs.get("selector","").split("|")
@@ -186,11 +201,13 @@ class _AServer:
                     await Session.trace(session_name, url, ok=False)
                 else:
                     try:
-                        text= await response.text()
+                        # text= await response.text()
+                        text = await self._http_stream_read(response)
                         # trance url if ok
                         await Session.trace(session_name, url, ok=True)
                         await response.release()
-                        await session.close()
+                        if not use_chains:
+                            await session.close()
                         return text
                     except Exception:
                         await response.release()
@@ -208,7 +225,10 @@ class _AServer:
                         text = await response.text()
                         await Session.trace(session_name, url, ok=True)
                         await response.release()
-                        await session.close()
+                        
+                        if not use_chains:
+                            await session.close()
+                        
                         return text
                     except Exception:
                         await response.release()
@@ -344,8 +364,8 @@ class _AServer:
                 if not O:
                     log.info('loading module in '+_s_name)
                     s = Session(name=_s_name)
-                    code = await s.get_code()
-                    DyImport.dynamic_import(_s_name ,code)
+                    code,code_name = await s.get_code()
+                    DyImport.dynamic_import(_s_name ,code, code_name)
                     DyImport.use(h, _s_name)
             
             
@@ -426,14 +446,21 @@ class _AServer:
             try:
                 st = 0
                 while 1:
-                    if st > 10:
+                    if st > 3:
                         log.error("[%s] [%s]" % (colored(hand['url'], 'red'), "try over"))
                         raise asyncio.TimeoutError("socket seemd closed")
                     if 'chains' in hand:
                         hand['chains'].next()
+                        kwargs = hand['kwargs']
+                        # log.info("again")
+                        # log.info(kwargs)
+                        use_chains = True
+                    else:
+                        use_chains = False
                     url = hand['url']
-                    waiter = read(url,session_name=hand['session_name'],**kwargs)
-                    data = await asyncio.wait_for(waiter, timeout=12)
+
+                    waiter = read(url,session_name=hand['session_name'],use_chains=use_chains, **kwargs)
+                    data = await asyncio.wait_for(waiter, timeout=32)
 
                     if isinstance(data, str):
                         data = data.encode("utf8")
@@ -453,7 +480,7 @@ class _AServer:
 
                             #log.info("recv no.%d" % c)
 
-                        log.info("[%s] 200 [%d]" % (colored(hand['url'], 'green'),len(data)))
+                        log.info("[%s] 200 [%d]" % (colored(hand['url'][:50], 'green'),len(data)))
                     else:
                         log.info("recv a object from remote : {}".format(type(data)))
 
@@ -476,16 +503,22 @@ class _AServer:
                                 log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)
                         if 'chains' in h and h['chains'].order < h['chains'].turn:
+                            log.info("--- chains --- [con]")
                             continue
+                        else:
+                            log.info("--- chains --- [over]")
                         break
                     else:
                         if data:
                             hand['data'] = data
                             db_to = hand['db_to_save']
                             if 'selector' in hand:
-                                log.info(colored(hand['url'], 'blue', attrs=['bold']) + " -> %s %d" % (db_to, len(data) ) ) 
+                                log.debug(colored(hand['url'], 'blue', attrs=['bold']) + " -> %s %d" % (db_to, len(data) ) ) 
                                 log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), hand, data)
+                            if 'chains' in hand and hand['chains'].order < hand['chains'].turn:
+                                log.debug("--- chains --- [con]")
+                                continue
                             break
                         else:
                             raise Exception("session is loss : "+ hand['url'])
@@ -901,9 +934,13 @@ class HttpXp:
         if agent:
             if random_agent:
                 ag = random.choice(USER_AGENTS)
+            elif isinstance(agent, str):
+                ag = agent
             else:
                 ag = USER_AGENTS[0]
-            self.options['headers'] = {"user-agent": ag}
+            if 'headers' not in self.options:
+                self.options['headers'] = {}
+            self.options['headers'].update({"user-agent": ag})
         if proxy:
             self.options['proxy'] = socks_proxy
         
