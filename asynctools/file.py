@@ -88,7 +88,7 @@ async def save_to_redis(id, hand, data,loop ):
         m = data
         soup = None
     elif data:
-        if isinstance(data, str):
+        if isinstance(data, (str,bytes,)):
             soup = Bs(data, 'lxml')
         elif isinstance(data, list):
             m['html'] = data       

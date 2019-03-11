@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 
 setup(name='x-mroy-1045',
-    version='0.5.3',
+    version='0.5.4',
     description='a anayzer package',
     url='https://github.com/Qingluan/.git',
     author='Qing luan',
