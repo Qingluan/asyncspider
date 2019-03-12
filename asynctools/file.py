@@ -15,6 +15,7 @@ import logging
 import json
 import re
 from getpass import getpass
+from tqdm import tqdm
 from concurrent.futures.thread import ThreadPoolExecutor
 from concurrent.futures import TimeoutError
 
@@ -475,6 +476,17 @@ class Session:
             body.append(_b)
             
         return body
+    
+    async def just_bulk(self, datas):
+        async with Elasticsearch([i for i in self.host.split(",")]) as es:
+            d = []
+            for i,v in enumerate(tqdm(datas), desc='bulk wait'):
+                if i > 0 and i % 1024 == 0:
+                    await es.bulk(d)
+                    d = [v]
+                else:
+                    d.append(v)
+
 
     async def save_to_es(self, datas=None, loop=None):
         if not loop:
