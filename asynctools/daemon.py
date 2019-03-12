@@ -68,8 +68,8 @@ class Daemon:
         sys.stdout.flush()
         sys.stderr.flush()
         si = open(os.devnull, 'r')
-        so = open(self.ste, 'a+')
-        se = open(self.std, 'a+')
+        so = open(self.std, 'a+')
+        se = open(self.ste, 'a+')
 
         os.dup2(si.fileno(), sys.stdin.fileno())
         os.dup2(so.fileno(), sys.stdout.fileno())

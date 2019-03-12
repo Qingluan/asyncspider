@@ -84,11 +84,12 @@ async def save_to_redis(id, hand, data,loop ):
     m = {}
     redis = await aioredis.create_redis(
         'redis://localhost', db=6, loop=loop)
+    soup = None
     if isinstance(data, dict) and 'error' in data:
         m = data
         soup = None
     elif data:
-        if isinstance(data, str):
+        if isinstance(data, (str, bytes,)):
             soup = Bs(data, 'lxml')
         elif isinstance(data, list):
             m['html'] = data       
@@ -292,14 +293,22 @@ class Session:
         
 
     @classmethod
-    def load_session(cls, name, index='', type=''):
+    def load_session(cls, name, index='', type='', host='localhost'):
         r = Redis(db=7, decode_responses='utf-8')
         if not name in r.hkeys('sess-manager'):
             logging.warn('no such session and create it')
             l = cls(name)
-            l.init(index=index, type=type)
+            l.init(index=index, type=type, host=host)
+            return cls(name, host=host)
         else:
-            return  cls(name)
+            host = r.hget(name+'-es', 'hosts')
+            return  cls(name, host=host)
+
+    @classmethod
+    def change_es_host(cls, name, host):
+        r = Redis(db=7, decode_responses='utf-8')
+        r.hset(name+'-es', 'hosts', host)
+
 
     @classmethod
     def list_sessions(cls):
@@ -311,16 +320,21 @@ class Session:
         size = r.hget(self.name + "-es", 'cache')
         doc = r.hget(self.name + "-es", 'doc')
         code = r.hget(self.name + "-es", 'code')
-        return  size,doc, b64decode(code.encode('utf-8'))
+        if code:
+            code = b64decode(code.encode('utf-8'))
+        return  size,doc, code
 
-    def init(self, index='', type=''):
+    def init(self, index='', type='', host=''):
         r = Redis(db=7, decode_responses='utf-8')
         r.hset('sess-manager', self.name, 'init')
         r.hset(self.name+"-es", 'cache', 0)
+        r.hset(self.name+"-es", 'hosts', self.host)
         if not index:
             index = self.name.lower()
         if not type:
             type = self.name.lower()
+        if not host:
+            r.hset(self.name+'-es', 'hosts', host)
         r.hset(self.name+"-es", 'doc', index + '|' + type)
         # r.hset(self.name + "-http", key, value)
 
@@ -388,6 +402,10 @@ class Session:
             r.delete(name+ "-datas")
             r.delete(name)
             r.hdel('sess-manager', name)
+
+    @classmethod
+    async def trace_before(cls, name, link):
+        await cls.trace(name, link, ok=False)        
 
     @classmethod
     async def trace(cls, name, link, ok=True):

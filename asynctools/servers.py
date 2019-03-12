@@ -191,6 +191,7 @@ class _AServer:
 
         if 'method' in kwargs:
             kwargs.pop('method')
+        await Session.trace_before(session_name, url)
         if m == 'get':
             async with  session.get(url, **kwargs) as response:
                 # log.info('connect : {}'.format(url))
@@ -198,7 +199,7 @@ class _AServer:
                     log.error("[%d] : url : %s" % (response.status, url))
                     await response.release()
                     response.close()
-                    await Session.trace(session_name, url, ok=False)
+                    
                 else:
                     try:
                         # text= await response.text()
@@ -210,6 +211,7 @@ class _AServer:
                             await session.close()
                         return text
                     except Exception:
+                        # await Session.trace(session_name, url, ok=False)
                         await response.release()
                         await session.close()
         elif m =='post':
@@ -219,7 +221,7 @@ class _AServer:
                     log.error("Error: %s" % colored(str(response.status), 'red'))
                     await response.release()
                     response.close()
-                    await Session.trace(session_name, url, ok=False)
+                    # await Session.trace(session_name, url, ok=False)
                 else:
                     try:
                         text = await response.text()
@@ -231,6 +233,7 @@ class _AServer:
                         
                         return text
                     except Exception:
+                        # await Session.trace(session_name, url, ok=False)
                         await response.release()
                         await session.close()
                         return 
@@ -339,6 +342,12 @@ class _AServer:
                 'type',
                 'chains'
             ]
+            if not h:
+                log.error("Can not found id:{}".format(id))
+                self.check_write(writer, pickle.dumps({'id':id, 'msg':'not found id' , 'error':True}))
+                await writer.drain()
+                return
+
             
             dy_import = False
             for k in _REGIST_KEY:
@@ -961,7 +970,7 @@ class HttpXp:
 
     @classmethod
     def create_session(cls, name, index='', type=''):
-        sess = Session.load_session(name, index=index, type=type)
+        sess = Session.load_session(name, index=index, type=type, host='localhost:9200')
         cls.session_name = name
 
     def es_index_type(self, index, type):
