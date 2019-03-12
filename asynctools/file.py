@@ -335,11 +335,17 @@ class Session:
         for k in base:
             v = base[k]
             if v.endswith('=='):
-                v = b64decode(v.encode('utf-8'))
+                v = b64decode(v.encode('utf-8')).decode('utf-8')
                 base[k] = v
         chains_status = r.hgetall(self.name + "-chains")
+        goods = 0
+        
         links_status = r.hgetall(self.name + "-http")
-        base['http'] = links_status
+        for i in links_status:
+            if links_status[i] == "True":
+                goods +=1
+    
+        base['http'] = '%d/%d' % (goods, len(links_status))
         base['chains'] = chains_status
         return base
 
@@ -413,7 +419,7 @@ class Session:
                 logging.info(colored("Filter:  %s from data: {}".format(data[:100]) % id, 'yellow', attrs=['bold']))
                 return False
         return  True
-    
+
 
     @classmethod
     def destroy(cls, name):
@@ -539,10 +545,10 @@ class Session:
         redis.close()
         return l
     
-    def sync_es_range(self, *keys, export=False, call=None, **query):
+    def sync_es_range(self, *keys, call=None, **query):
         loop = asyncio.get_event_loop()
         index,tp = self.status()[1].split("|")
-        return loop.run_until_complete(self.es_range(index, tp, *keys, export=export, call=call, **query))
+        return loop.run_until_complete(self.es_range(index, tp, *keys, call=call, **query))
  
     async def es_range(self, index, tp, *keys, call=None, **query):
         
@@ -649,8 +655,17 @@ class Session:
         code_name = await redis.hget(self.name + "-es", "classname", encoding='utf-8')
         redis.close()
         return code, code_name
+    
+    def __setitem__(self, k,v):
+        r = Redis(db=7)
+        if not v:
+            r.hdel(self.name+"-es", k)
+        else:
+            r.hset(self.name+"-es", k, v)
 
-    async def clear_index(self,name, index):
+    async def clear_index(self):
+        name = self.name
+        index = self.status()[1].split("|")[0]
         async with Elasticsearch([i for i in self.host.split(",")]) as es:
             ss = self.load_session(name)
             pwd = self['passwd']
@@ -661,3 +676,7 @@ class Session:
                     return 
             return await es.indices.delete(index)
 
+    def syn_clear_index(self):
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.clear_index())
+ 
