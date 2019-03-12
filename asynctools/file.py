@@ -350,6 +350,8 @@ class Session:
             # r.hset(self.name+"-es", 'doc', index + '|' + type)
             r.delete(self.name + '-datas')
             r.delete(self.name + '-datas-bak')
+            r.delete(self.name + '-http')
+            r.delete(self.name + '-chains')
     
     def __getitem__(self, k):
         r = Redis(db=7, decode_responses='utf-8')
@@ -399,8 +401,9 @@ class Session:
         r = Redis(db=7, decode_responses='utf-8')
         if name in r.hkeys('sess-manager'):
             r.delete(name + "-es")
-            r.delete(name+ "-http")
-            r.delete(name+ "-datas")
+            r.delete(name + "-http")
+            r.delete(name + "-chains")
+            r.delete(name + "-datas")
             r.delete(name)
             r.hdel('sess-manager', name)
 

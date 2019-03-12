@@ -16,6 +16,8 @@ import importlib.machinery
 import  logging
 import  tabulate
 import inspect
+import aiohttp
+import aioredis
 from termcolor import colored, HIGHLIGHTS
 import  redis
 from types import FunctionType
@@ -30,7 +32,7 @@ import re
 from bs4 import BeautifulSoup as Bs
 import urllib.parse as up
 import json
-
+import aioredis
 def show_debug(*args, **kargs):
     
     ck = list(HIGHLIGHTS.keys())[1:]
@@ -68,6 +70,7 @@ class Chains:
     def __init__(self, hand):
         self.hand = hand
         self.turn = self.__class__.turn
+        self.fire_url = hand['url']
         self.order = 0
 
     @property
@@ -89,6 +92,13 @@ class Chains:
         for key,val in kargs.items():
             cookie[key] = val
 
+    async def trace_chains(self):
+        name = self.hand['session_name']
+        link = self.fire_url
+        redis = await aioredis.create_redis('redis://localhost', db=7)
+        logging.debug("trace: %s" % colored(link, 'green'))
+        await redis.hset(name + "-chains", link, self.order)
+        redis.close()
 
     def set_url(self,url):
         self.hand['url'] = url

@@ -206,6 +206,7 @@ class _AServer:
                         text = await self._http_stream_read(response)
                         # trance url if ok
                         await Session.trace(session_name, url, ok=True)
+                        
                         await response.release()
                         if not use_chains:
                             await session.close()
@@ -496,6 +497,7 @@ class _AServer:
 
                     if not data:
                       st += 1
+                      continue
                     # log.info(id + " :got data ")
                     h, t = self.get_handler(id)
                     hand_bak = h
@@ -512,6 +514,7 @@ class _AServer:
                                 log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)
                         if 'chains' in h and h['chains'].order < h['chains'].turn:
+                            await h['chains'].trace_chains()
                             log.info("--- chains --- [con]")
                             continue
                         else:
@@ -527,6 +530,7 @@ class _AServer:
                                 await self.save_local(str(id), hand, data)
                             if 'chains' in hand and hand['chains'].order < hand['chains'].turn:
                                 log.debug("--- chains --- [con]")
+                                Session.trace(hand['session_name'], hand['url'], hand['chains'].order)
                                 continue
                             break
                         else:
