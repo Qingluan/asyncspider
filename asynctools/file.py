@@ -328,6 +328,21 @@ class Session:
         if code:
             code = b64decode(code.encode('utf-8'))
         return  size,doc, code
+    
+    def all_status(self):
+        r = Redis(db=7, decode_responses='utf-8') 
+        base = r.hgetall(self.name + "-es")
+        for k in base:
+            v = base[k]
+            if v.endswith('=='):
+                v = b64decode(v.encode('utf-8'))
+                base[k] = v
+        chains_status = r.hgetall(self.name + "-chains")
+        links_status = r.hgetall(self.name + "-http")
+        base['http'] = links_status
+        base['chains'] = chains_status
+        return base
+
 
     def init(self, index='', type='', host=''):
         r = Redis(db=7, decode_responses='utf-8')
@@ -523,7 +538,12 @@ class Session:
         l = await redis.llen(self.name + "-datas")
         redis.close()
         return l
-
+    
+    def sync_es_range(self, *keys, export=False, call=None, **query):
+        loop = asyncio.get_event_loop()
+        index,tp = self.status()[1].split("|")
+        return loop.run_until_complete(self.es_range(index, tp, *keys, export=export, call=call, **query))
+ 
     async def es_range(self, index, tp, *keys, call=None, **query):
         
         async with Elasticsearch([self.host]) as es:
@@ -536,14 +556,14 @@ class Session:
             
                 res = []
                 async for doc in scan:
-                    d = doc['_source']
                     if call:
-                        call(d)
+                        call(doc)
                     else:
+
                         dd = {}
                         for k in keys:
                             km = k.split(':')
-                            v = d
+                            v = doc
                             for kk in km:
                                 v = v.get(kk)
                                 if not v:break
