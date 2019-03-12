@@ -509,7 +509,9 @@ class _AServer:
                         else:
                             # log.info(colored("{}".format(h), 'green') )
                             db_to = h['db_to_save']
-                            if 'selector' in h:
+                            if not data:
+                                continue
+                            if 'selector' in h and data:
                                 log.debug(colored(h['url'], 'blue') + db_to)
                                 log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)

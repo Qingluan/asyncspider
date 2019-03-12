@@ -5,6 +5,7 @@ from .chains import show_debug
 import  json
 from functools import partial
 from termcolor import colored
+import re
 
 parser = argparse.ArgumentParser(usage="export or import , or start server")
 parser.add_argument("-l", "--list", default=False, action='store_true', help="list all session")
@@ -14,6 +15,7 @@ parser.add_argument("session", nargs="*", help="show session 's status and links
 parser.add_argument("-e", "--export", default=None, help='export data [redis/es]')
 parser.add_argument("-o", "--output",default=None, help='export data output to file')
 parser.add_argument("--links", default=False, action='store_true', help="show links status in sesionss") 
+parser.add_argument("--chains", default='',  help="filter json res")
 parser.add_argument("-k", "--key", default=None, type=str, help="set 'sess_name -k key1 -v val1' key value in sesionss's -es ")
 parser.add_argument("-v", "--val", default=None, type=str, help="set 'sess_name -k key1 -v val1'  key value in sesionss's -es ")
 
@@ -60,8 +62,24 @@ def main():
                 t = sess.status_links()
             else:
                 t = sess.all_status()
+            if args.chains and 'chains' in t:
+                c = t['chains']
+                d = {}
+                limit = int(re.findall(r'\d+', args.chains)[0])
+                for k,v in c.items():
+                    v = int(v)
+                    if '<' in args.chains:
+                        if v < limit:
+                            d[k] = v
+                    elif '>' in args.chains:
+                        if v > limit:
+                            d[k] = v
+                    else:
+                        if v == limit:
+                            d[k] = v
+                t['chains'] = d
+
             res.append(t)
-            
         if args.output:
             dir = os.path.dirname(args.output)
             if os.path.exists(dir) and not os.path.exists(args.output):
