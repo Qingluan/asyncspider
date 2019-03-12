@@ -316,6 +316,10 @@ class Session:
         r = Redis(db=7, decode_responses='utf-8')
         return r.hkeys("sess-manager")
 
+    def status_chains(self):
+        r = Redis(db=7, decode_responses='utf-8')
+        return r.hgetall(self.name + "-chains")
+
     def status(self):
         r = Redis(db=self.db, decode_responses='utf-8')
         size = r.hget(self.name + "-es", 'cache')

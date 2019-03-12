@@ -13,7 +13,7 @@ setup(name='x-mroy-1045',
     packages=find_packages(),
     install_requires=['async_timeout','aioelasticsearch','bs4','lxml','termcolor','redis', 'aiofiles','aioredis','aiosocks==0.2.6','aiohttp==2.3.10'],
     entry_points={
-        'console_scripts': ['m-async=asynctools.servers:start_socket_service', 'm-asyncs=asynctools.servers:run_local_async']
+        'console_scripts': ['m-async-console=asynctools.cmd:main','m-async=asynctools.servers:start_socket_service', 'm-asyncs=asynctools.servers:run_local_async']
     },
 
 )

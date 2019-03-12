@@ -104,12 +104,16 @@ class Chains:
         self.hand['url'] = url
 
     def next(self, order=None):
-        self.chains_handler()
-
+        try:
+            self.chains_handler()
+        except Exception as e:
+            logging.error(colored("Error in chains_handler: url: %s order: %d" %(self.fire_url, self.order), 'red', attrs=['bold']))
+            logging.error(e)
+            self.turn = -1
+            return
         args = ['='.join([str(ii) for ii in i]) for i in self.hand.items() if i[0] != 'kwargs' and i[0] != 'read' and i[0] != 'data']
         show_debug(self.order, *args, **self.hand['kwargs'].get('headers'), proxy=self.hand['kwargs']['proxy'])
         # logging.info(colored(inspect.getsource(self.chains_handler), attrs=['bold']))
-        
         self.order += 1
 
     def end_handler(self, o):
