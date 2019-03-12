@@ -969,8 +969,8 @@ class HttpXp:
         return Session.load_session(name, index=index, type=doc_type)
 
     @classmethod
-    def create_session(cls, name, index='', type=''):
-        sess = Session.load_session(name, index=index, type=type, host='localhost:9200')
+    def create_session(cls, name, index='', type='', host='localhost:9200'):
+        sess = Session.load_session(name, index=index, type=type, host=host)
         cls.session_name = name
 
     def es_index_type(self, index, type):

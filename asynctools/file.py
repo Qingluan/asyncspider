@@ -297,7 +297,8 @@ class Session:
         r = Redis(db=7, decode_responses='utf-8')
         if not name in r.hkeys('sess-manager'):
             logging.warn('no such session and create it')
-            l = cls(name)
+
+            l = cls(name, host=host)
             l.init(index=index, type=type, host=host)
             return cls(name, host=host)
         else:
@@ -305,7 +306,7 @@ class Session:
             return  cls(name, host=host)
 
     @classmethod
-    def change_es_host(cls, name, host):
+    def change_es_host(cls,name, host):
         r = Redis(db=7, decode_responses='utf-8')
         r.hset(name+'-es', 'hosts', host)
 
@@ -361,7 +362,7 @@ class Session:
 
     @classmethod
     def es_flush(cls, name):
-        c = cls(name)
+        c = cls.load_session(name)
         loop = asyncio.get_event_loop()
         logging.info("save to es: %s" % c['cache'])
         return loop.run_until_complete(asyncio.gather(c.save_to_es(loop=loop)))
@@ -450,9 +451,12 @@ class Session:
     async def save_to_es(self, datas=None, loop=None):
         if not loop:
             loop = asyncio.get_event_loop()
+        print("->, es:", self.host)
+        redis = await aioredis.create_redis('redis://localhost',db=7,loop=self.loop)
+        host = await redis.hget(self.name + "-es", "hosts")
+        self.host = host.decode('utf-8')
         async with Elasticsearch([i for i in self.host.split(",")]) as es:
             if not datas:
-                redis = await aioredis.create_redis('redis://localhost', db=7, loop=loop)
                     # index, type = await redis.hget(self.name, 'doc', encoding='utf-8').split("|")
                     # k2 = index + "_" + type
                 logging.info("get index type from db")
@@ -463,9 +467,7 @@ class Session:
                     datas.append(v)
                 
                 # await 
-                redis.close()
 
-            redis = await aioredis.create_redis('redis://localhost',db=7,loop=self.loop)
             res = await es.bulk(datas)
             await redis.hset("sess-manager", self.name, "init")
             
@@ -572,14 +574,14 @@ class Session:
         await redis.hset(self.name+"-es",'cache', size)
         logging.info("save size: %s" %colored(size, 'blue'))
         # await redis.hset(self.name, 'save', now + 1)
-        if size > 4096:
+        if size > 1024:
             # if status =='saving':
             #     logging.info(colored('saving ... wait', 'green'))
             #     return
             # else:
             #     await redis.hset('sess-manager', self.name, 'saving')
             q = []
-            for i in range(4096):
+            for i in range(1024):
                 one = await redis.lpop(self.name + "-datas")
                 h,v = pickle.loads(b64decode(one))
                 q.append(h)
@@ -631,14 +633,4 @@ class Session:
                     logging.info("error passwd to delete all data in index: %s" %index)
                     return 
             return await es.indices.delete(index)
-
-    def __exit__(self):
-        size,doc = self.status()
-        if int(size) > 0:
-            if not self.loop:
-                loop = asyncio.get_event_loop()
-            else:
-                loop = self.loop
-            logging.info("exit and save to es")
-            loop.run_until_complete(self.save_to_es(loop=loop))
 
