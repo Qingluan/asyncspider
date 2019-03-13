@@ -457,35 +457,39 @@ class Session:
         r.hset("sess-manager", self.name, "init")
 
 
-    def _buld_many(self, index, type, datas, id=None):
-        p = {'index': {'_index': index, '_type': type}}
+    def _buld_many(self, index, type, datas, id=None, handle='index'):
+        p = {handle: {'_index': index, '_type': type}}
         body = []
         for data in datas:
             _b = []
-            if isinstance(data, dict):
-                # tm = str(time.time())
-                # p['index']['_id'] = tm
+            if isinstance(data, dict) and handle in ('index','create',):
                 v = data
+                if 'timestamp' not in v:
+                    data['timestamp'] = datetime.datetime.now()
+                if id and id in data:
+                    p[handle]['_id'] = data[id]
+
+                _b = [p,v]
+            elif handle == 'delete':
+                p[handle]['_id'] = data
+                _b = [p]
             else:
                 logging.warn(colored("include error type in data: {}".format(data), 'red'))
                 continue
-
-            if 'timestamp' not in v:
-                data['timestamp'] = datetime.datetime.now()
-            if id and id in data:
-                p['index']['_id'] = data[id]
-            _b = [p,v]
 
             body.append(_b)
 
         return body
 
+
     async def just_bulk(self, datas):
         async with Elasticsearch([i for i in self.host.split(",")]) as es:
             d = []
-            for i,v in enumerate(tqdm(datas), desc='bulk wait'):
-                if i > 0 and i % 1024 == 0:
-                    await es.bulk(d)
+            with tqdm(total=len(datas)) as pbar:
+                for i,v in enumerate(datas):
+                    if i > 0 and i % 1024 == 0:
+                        await es.bulk(d)
+                        pbar.update(i)
                     d = [v]
                 else:
                     d.append(v)
@@ -508,15 +512,11 @@ class Session:
                 for h,v in _datas:
                     datas.append(h)
                     datas.append(v)
-                
-                # await 
 
             res = await es.bulk(datas)
             await redis.hset("sess-manager", self.name, "init")
-            
             if not  res['errors']:
                 si = await redis.llen(self.name+"-datas")                    
-                
                 # bakdata =  await redis.lrange(self.name + "-datas-bak", 0, -1)
                 # si = await redis.lpush(self.name+ '-datas', *bakdata)
                 # await redis.delete(self.name + "-datas-bak")
