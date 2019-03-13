@@ -97,7 +97,7 @@ class Chains:
         name = self.hand['session_name']
         link = self.fire_url
         redis = await aioredis.create_redis('redis://localhost', db=7)
-        logging.debug("trace: %s" % colored(link, 'green'))
+        logging.info("trace: %s" % colored(link, 'green'))
         await redis.hset(name + "-chains", link, self.order)
         redis.close()
 

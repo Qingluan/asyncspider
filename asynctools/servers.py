@@ -516,8 +516,8 @@ class _AServer:
                                 log.debug(colored(data[:100], "green"))
                                 await self.save_local(str(id), h, data)
                         if 'chains' in h and h['chains'].order < h['chains'].turn:
-                            await h['chains'].trace_chains()
                             log.info("--- chains --- [con]")
+                            await h['chains'].trace_chains()
                             continue
                         else:
                             log.info("--- chains --- [over]")
@@ -532,7 +532,8 @@ class _AServer:
                                 await self.save_local(str(id), hand, data)
                             if 'chains' in hand and hand['chains'].order < hand['chains'].turn:
                                 log.debug("--- chains --- [con]")
-                                Session.trace(hand['session_name'], hand['url'], hand['chains'].order)
+                                await hand['chains'].trace_chains()
+                                await Session.trace(hand['session_name'], hand['url'], hand['chains'].order)
                                 continue
                             break
                         else:

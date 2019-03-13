@@ -289,6 +289,7 @@ class Session:
         self.host = host
         self.timeout = timeout
         self.db = db
+        self._duplicate = {}
         if not name:
             self.name = str(int(time.time()))
         
@@ -456,7 +457,7 @@ class Session:
         r.hset("sess-manager", self.name, "init")
 
 
-    def _buld_many(self, index, type, datas):
+    def _buld_many(self, index, type, datas, id=None):
         p = {'index': {'_index': index, '_type': type}}
         body = []
         for data in datas:
@@ -471,12 +472,14 @@ class Session:
 
             if 'timestamp' not in v:
                 data['timestamp'] = datetime.datetime.now()
+            if id and id in data:
+                p['index']['_id'] = data[id]
             _b = [p,v]
 
             body.append(_b)
-            
+
         return body
-    
+
     async def just_bulk(self, datas):
         async with Elasticsearch([i for i in self.host.split(",")]) as es:
             d = []
@@ -556,14 +559,30 @@ class Session:
         l = await redis.llen(self.name + "-datas")
         redis.close()
         return l
-    
+ 
     def sync_es_range(self, *keys, call=None, **query):
         loop = asyncio.get_event_loop()
         index,tp = self.status()[1].split("|")
         return loop.run_until_complete(self.es_range(index, tp, *keys, call=call, **query))
  
+    def _collection_duplicate(self, field, doc):
+        v = doc['_source'].get(field)
+        if v in self._duplicate:
+            self._duplicate[v].append(doc['_id'])
+        else:
+            self._duplicate[v] = []
+
+    def sync_es_duplicate(self, field):
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.es_duplicate(field))
+        return self._duplicate
+
+    async def es_duplicate(self, field):
+        filter_func = partial(self._collection_duplicate, field)
+        index, tp = self.status()[1].split("|")
+        await self.es_range(index, tp, call=filter_func)
+
     async def es_range(self, index, tp, *keys, call=None, **query):
-        
         async with Elasticsearch([self.host]) as es:
             async with Scan(
                 es,
@@ -571,13 +590,19 @@ class Session:
                 doc_type=tp,
                 query=query,
             ) as scan:
-            
+
                 res = []
+                count = await es.count()
+                progressbar = tqdm(desc="scan all elasticsearch", total=count)
+                ic = 0
+                si = count / 1000
                 async for doc in scan:
+                    ic += 1
+                    if ic % si == 0:
+                        progressbar.update(ic)
                     if call:
                         call(doc)
                     else:
-
                         dd = {}
                         for k in keys:
                             km = k.split(':')
@@ -587,9 +612,9 @@ class Session:
                                 if not v:break
                             dd[k] =v
                         res.append(dd)
+                progressbar.close()
                 return res
 
-                    
 
     async def bulk(self,  data, index=None, type=None):
         if not isinstance(data, (dict,list,)):
@@ -604,11 +629,11 @@ class Session:
 
         k = self.name + "_" + index + "_" + type
         k2 = index + "_" + type
-        
+        _id = await redis.hget(self.name + "-es", "uniq-id", encoding='utf-8') 
         if isinstance(data, list):
-            d = self._buld_many(index, type, data)
+            d = self._buld_many(index, type, data, id=_id)
         else:
-            d = self._buld_many(index, type, [data])
+            d = self._buld_many(index, type, [data], id=_id)
         # await redis.append(k, d + "\n")
         status = await redis.hget('sess-manager', self.name, encoding='utf-8')
         
