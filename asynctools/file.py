@@ -458,9 +458,9 @@ class Session:
 
 
     def _buld_many(self, index, type, datas, id=None, handle='index'):
-        p = {handle: {'_index': index, '_type': type}}
         body = []
         for data in datas:
+            p = {handle: {'_index': index, '_type': type}}
             _b = []
             if isinstance(data, dict) and handle in ('index','create',):
                 v = data
@@ -489,10 +489,16 @@ class Session:
                 for i,v in enumerate(datas):
                     if i > 0 and i % 1024 == 0:
                         await es.bulk(d)
-                        pbar.update(i)
-                    d = [v]
-                else:
-                    d.append(v)
+                        pbar.update(1024)
+                        if isinstance(v, list):
+                            d = v
+                        else:
+                            d = [v]
+                    else:
+                        if isinstance(v ,list):
+                            d += v
+                        else:
+                            d.append(v)
 
 
     async def save_to_es(self, datas=None, loop=None):
@@ -592,14 +598,15 @@ class Session:
             ) as scan:
 
                 res = []
-                count = await es.count()
+                count = await es.count(index=index)
+                count = count['count']
                 progressbar = tqdm(desc="scan all elasticsearch", total=count)
                 ic = 0
                 si = count / 1000
                 async for doc in scan:
                     ic += 1
-                    if ic % si == 0:
-                        progressbar.update(ic)
+                    if ic > 0 and ic % 1000 ==0:
+                        progressbar.update(si)
                     if call:
                         call(doc)
                     else:
